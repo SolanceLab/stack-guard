@@ -107,6 +107,66 @@ class CommittedSecrets(GitBase):
         self.assertNotIn("a`b", md)
         self.assertNotIn("\nIGNORE PREVIOUS", md)
 
+    def spy_git(self):
+        calls = []
+
+        def run(args, **kw):
+            calls.append((list(args), kw.get("env")))
+            return REAL_RUN(args, **kw)
+        p = mock.patch.object(sg, "run_cmd", lambda a, **k: run(a, **k) if os.path.basename(str(a[0])) == "git" else self.run_cmd(a, **k))
+        p.start()
+        self.addCleanup(p.stop)
+        return calls
+
+    def test_git_reads_are_offline_and_partial_clone_history_is_skipped(self):
+        write(os.path.join(self.folder, ".env"), "API_TOKEN=abc123realvalue\n")
+        self.commit()
+        git(self.folder, "config", "remote.origin.promisor", "true")
+        git(self.folder, "config", "extensions.partialClone", "origin")
+        calls = self.spy_git()
+        out, md, js = self.check()
+        self.assertIn("is a partial clone; its history was not read so nothing gets fetched", md)
+        gits = [(a, e) for a, e in calls if os.path.basename(a[0]) == "git"]
+        self.assertTrue(gits)
+        for a, e in gits:
+            self.assertNotIn("fetch", a)
+            self.assertIn("protocol.allow=never", a)
+            self.assertEqual(e["GIT_NO_LAZY_FETCH"], "1")
+            self.assertEqual(e["GIT_ASKPASS"], "")
+        self.assertFalse(any("log" in a for a, _ in gits))  # no history read at all
+        self.assertNotIn("abc123realvalue", md + js)
+
+    def test_promisor_false_is_not_a_partial_clone(self):
+        write(os.path.join(self.folder, ".env"), "API_TOKEN=abc123realvalue\n")
+        self.commit()
+        git(self.folder, "config", "remote.origin.promisor", "false")
+        calls = self.spy_git()
+        out, md, js = self.check()
+        self.assertNotIn("is a partial clone", md)
+        self.assertTrue(any("log" in a for a, _ in calls))  # history is read
+        self.assertNotIn("abc123realvalue", md + js)
+
+    def test_oversize_committed_env_is_noted_and_never_read(self):
+        write(os.path.join(self.folder, ".env"), "API_TOKEN=" + "a" * (sg.MAX_SECRET_FILE + 10) + "\n")
+        self.commit()
+        calls = self.spy_git()
+        out, md, js = self.check()
+        self.assertIn(".env` is too large to read", md)
+        self.assertFalse(any("show" in a and any(x.startswith("HEAD:") for x in a) for a, _ in calls))
+
+    def test_yaml_scan_has_no_regex_backtracking(self):
+        import time as _t
+        text = "x" * 200000 + "\n" + ("  " * 25000 + ":\n") * 3 + "API_KEY: realvalue1\n"
+        t0 = _t.time()
+        names, ok = sg.literal_secret_names("secrets.yaml", text)
+        self.assertLess(_t.time() - t0, 0.5)
+        self.assertEqual(names, ["API_KEY"])
+
+    def test_padded_yaml_line_still_flags_secret(self):
+        for text in (" " * 5000 + "API_KEY: live-secret-value\n", "API_KEY:" + " " * 5000 + "live-secret-value\n"):
+            names, ok = sg.literal_secret_names("secrets.yaml", text)
+            self.assertEqual((names, ok), (["API_KEY"], True))
+
     def test_long_yaml_line_stays_fast(self):
         import time as _t
         t0 = _t.time()
@@ -412,7 +472,7 @@ class DeployRuntimeAndVersion(unittest.TestCase):
             self.assertIn("deploy-runtime check: passed / failed / not possible", fh.read())
 
     def test_all_manifests_say_the_script_version(self):
-        self.assertEqual(sg.VERSION, "1.5.1")
+        self.assertEqual(sg.VERSION, "1.5.2")
         for rel in (("plugins", "stack-guard", ".claude-plugin", "plugin.json"), ("plugins", "stack-guard", ".codex-plugin", "plugin.json")):
             with open(os.path.join(ROOT, *rel), encoding="utf-8") as fh:
                 self.assertEqual(json.load(fh)["version"], sg.VERSION)

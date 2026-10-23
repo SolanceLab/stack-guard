@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.5.2
+
+- Reading git history of a scanned repo never fetches anything or runs anything from that repo: network protocols, credential helpers and prompts are switched off, and a partial clone is skipped with a "Not checked" line instead of being fetched.
+- Every secret-file read checks the size first (the committed copy as well as old revisions), so a huge file is never opened.
+- The YAML key scan is faster on crafted files.
+
 ## 1.5.1
 
 - The "Was I hit?" checker no longer has a shell: it can only read, search and open advisory pages, so "read-only" is enforced rather than asked for. The two commands it needs run in your main session, where you see them.

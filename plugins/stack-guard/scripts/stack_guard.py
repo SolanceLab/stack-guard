@@ -63,7 +63,7 @@ DEFAULT_TIME = "09:00"
 LABEL = "dev.stack-guard.watch"
 SECRET_WORD = re.compile(r"token|key|secret|password|auth", re.I)
 OSV_BATCH = "https://api.osv.dev/v1/querybatch"
-VERSION = "1.5.1"
+VERSION = "1.5.2"
 EOL_URL = "https://endoflife.date/api/%s.json"
 SKIP_DIRS = {"node_modules", "venv", "dist", "build", "worktrees", "__pycache__"}  # dot-folders are skipped too
 LATEST_URL = "https://raw.githubusercontent.com/SolanceLab/stack-guard/main/.claude-plugin/marketplace.json"
@@ -801,7 +801,8 @@ def tool_skip_notes(inv):
 
 GIT_SAFE = ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=" + os.devnull,  # a scanned repo's own config must never run a program
             "-c", "core.pager=cat", "-c", "log.showSignature=false", "-c", "gpg.program=false", "-c", "gpg.ssh.program=false",
-            "-c", "gpg.x509.program=false", "-c", "core.sshCommand=false", "-c", "diff.external=false"]
+            "-c", "gpg.x509.program=false", "-c", "core.sshCommand=false", "-c", "diff.external=false",
+            "-c", "protocol.allow=never", "-c", "credential.helper=", "-c", "core.alternateRefsCommand=", "-c", "uploadpack.packObjectsHook="]  # and no network
 HISTORY_TIMEOUT = 20
 MAX_SECRET_FILE = 1024 * 1024
 GIT_READ = ["--no-textconv", "--no-ext-diff"]
@@ -813,6 +814,7 @@ SECRET_FILE_PATTERNS = (".mcp.json", "claude_desktop_config.json", ".claude.json
 HISTORY_PATHS_MAX = 200
 PLACEHOLDER_FORMS = re.compile(r"(?:<[^<>]*>|your[-_ ][\w\- ]*(?:here|key|token|secret|value|password)|change[-_]?me|replace[-_]?(?:me|this)|"
                                r"x{3,}|\*{3,}|\.{3}|example|placeholder|todo|none|null)", re.I)  # whole-value forms only: a substring match hides real keys
+GIT_ENV_EXTRA = {"GIT_NO_LAZY_FETCH": "1", "GIT_TERMINAL_PROMPT": "0", "GIT_CONFIG_NOSYSTEM": "1", "GIT_ASKPASS": "", "SSH_ASKPASS": ""}
 
 
 def secret_file_name(path):
@@ -827,7 +829,7 @@ def secret_file_name(path):
 
 
 def is_placeholder(v):
-    v = str(v)[:4096].strip().strip("'\"").strip()
+    v = str(v).strip()[:4096].strip("'\"").strip()  # strip first: leading padding must not push the value out of the window
     if not v:
         return True
     return v.startswith("$") or bool(PLACEHOLDER_FORMS.fullmatch(v))
@@ -870,7 +872,14 @@ def literal_secret_names(base, text):
         except ValueError:
             return [], False
     if low in ("secrets.yaml", "secrets.yml"):
-        names = [safe_name(m.group(1)) for m in re.finditer(r"^[ \t]*([^\s#:][^:\n]*?)[ \t]*:[ \t]*(\S.*)$", text, re.M) if not is_placeholder(m.group(2))]
+        names = []
+        for line in text.splitlines():  # a line loop, not a regex: no backtracking on a crafted line
+            if ":" not in line or line.lstrip().startswith("#"):  # no truncation before the ':' is found: padding must not hide the key or value
+                continue
+            key, _, val = line.partition(":")
+            key = key.strip()
+            if key and not is_placeholder(val):
+                names.append(safe_name(key))
         return sorted(set(names)), True
     if low == ".npmrc":
         return (["_authToken"] if any(not is_placeholder(m.group(1)) for m in re.finditer(r"_authToken\s*=\s*(.*)", text)) else []), True
@@ -887,7 +896,34 @@ def literal_secret_names(base, text):
 
 
 def git_run(git, d, args, timeout=30, stderr_out=None):
-    return run_cmd([git] + GIT_SAFE + ["-C", d] + args, timeout=timeout, stderr_out=stderr_out)
+    env = dict(os.environ, **GIT_ENV_EXTRA)  # a scanned repo's git reads must never fetch or ask for a password
+    return run_cmd([git] + GIT_SAFE + ["-C", d] + args, timeout=timeout, stderr_out=stderr_out, env=env)
+
+
+def read_blob(git, d, spec):
+    """(status, text): status is ok, too_large or unreadable. The size is asked first, so a large blob is never read."""
+    code, size = git_run(git, d, ["cat-file", "-s", spec], timeout=HISTORY_TIMEOUT)
+    if code != 0 or not size.strip().isdigit():
+        return "unreadable", None
+    if int(size) > MAX_SECRET_FILE:
+        return "too_large", None
+    code, text = git_run(git, d, ["show"] + GIT_READ + [spec], timeout=HISTORY_TIMEOUT)
+    return ("ok", text) if code == 0 else ("unreadable", None)
+
+
+def is_partial_clone(git, d):
+    """True when the repo's own config marks it a partial clone: reading its history could fetch from a remote."""
+    code, out = git_run(git, d, ["config", "--local", "--get-regexp", r"^(extensions\.partialclone|remote\..*\.promisor)$"])
+    if code != 0:
+        return False
+    for line in out.splitlines():
+        key, _, val = line.partition(" ")
+        if key.lower() == "extensions.partialclone":
+            if val.strip():
+                return True
+        elif val.strip().lower() in ("true", "yes", "on", "1", ""):  # git booleans; a bare key means true
+            return True
+    return False
 
 
 def first_commit(git, d, path):
@@ -906,12 +942,9 @@ def past_secret(git, d, rel):
     revs = out.split()
     skipped = max(0, len(revs) - HISTORY_REVS_MAX)
     for c in reversed(revs[:HISTORY_REVS_MAX]):
-        code, size = git_run(git, d, ["cat-file", "-s", "%s:./%s" % (c, rel)], timeout=HISTORY_TIMEOUT)
-        if code != 0 or not size.strip().isdigit() or int(size) > MAX_SECRET_FILE:
-            continue  # too large to be a config file: never read it
-        code, blob = git_run(git, d, ["show"] + GIT_READ + ["%s:./%s" % (c, rel)], timeout=HISTORY_TIMEOUT)
-        if code != 0:
-            continue
+        status, blob = read_blob(git, d, "%s:./%s" % (c, rel))
+        if status != "ok":
+            continue  # too large to be a config file, or unreadable: never read it
         names, ok = literal_secret_names(os.path.basename(rel), blob)
         if ok and names:
             _, date = git_run(git, d, ["log", "-1", "--format=%as", c])
@@ -954,6 +987,9 @@ def scan_committed_secrets(root, inv):
         tracked = [x for x in out.split("\0") if x]
         tracked_set = set(tracked)
         has_head = git_run(git, d, ["rev-parse", "--verify", "-q", "HEAD"])[0] == 0
+        partial = is_partial_clone(git, d)
+        if partial:
+            res["not_checked"].append("Secrets committed to git: `%s` is a partial clone; its history was not read so nothing gets fetched." % safe_path(shown))
         for rel in tracked:
             if not secret_file_name(rel):
                 continue
@@ -965,24 +1001,26 @@ def scan_committed_secrets(root, inv):
             if os.path.islink(full):
                 continue
             # the committed copy (HEAD), never the working folder: an uncommitted edit or a newly staged file was not committed
-            code, text = git_run(git, d, ["show"] + GIT_READ + ["HEAD:./%s" % rel], timeout=HISTORY_TIMEOUT)
-            if code != 0:
+            status, text = read_blob(git, d, "HEAD:./%s" % rel)
+            if status == "too_large":
+                res["not_checked"].append("Secrets committed to git: `%s` is too large to read." % safe_path(os.path.relpath(full, root)))
+                continue
+            if status != "ok":
                 code2, listed = git_run(git, d, ["ls-tree", "--name-only", "HEAD", "--", rel], timeout=HISTORY_TIMEOUT)
                 if not has_head or (code2 == 0 and not listed.strip()):
                     continue  # tracked but never committed: nothing in git history to rotate
                 res["not_checked"].append("Secrets committed to git: the committed copy of `%s` could not be read." % safe_path(os.path.relpath(full, root)))
-                continue
-            if len(text) > MAX_SECRET_FILE:
-                res["not_checked"].append("Secrets committed to git: `%s` is too large to read." % safe_path(os.path.relpath(full, root)))
                 continue
             names, ok = literal_secret_names(os.path.basename(rel), text)
             if not ok:
                 res["not_checked"].append("Secrets committed to git: `%s` could not be parsed." % safe_path(os.path.relpath(full, root)))
                 continue
             if names:
-                since = first_commit(git, d, rel)
+                since = [""] if partial else first_commit(git, d, rel)
                 res["findings"].append({"file": safe_path(os.path.relpath(full, root)), "keys": names, "since": since[0],
                                         "date": since[1] if len(since) > 1 else "", "tracked": True})
+                continue
+            if partial:
                 continue
             past, skipped = past_secret(git, d, rel)  # a secret later swapped for a placeholder stays in earlier commits
             if skipped:
@@ -991,6 +1029,8 @@ def scan_committed_secrets(root, inv):
             if past:
                 res["findings"].append({"file": safe_path(os.path.relpath(full, root)), "keys": past[0], "since": past[1], "date": past[2],
                                         "tracked": True, "past": True})
+        if partial:
+            continue
         code, out = git_run(git, d, ["-c", "core.quotepath=off", "log", "--all", "--relative", "--format=@%h", "--name-only"], timeout=HISTORY_TIMEOUT)
         if code != 0:
             res["not_checked"].append("Secrets committed to git: the history of `%s` could not be read in %d seconds, so earlier commits were not checked." % (shown, HISTORY_TIMEOUT))
