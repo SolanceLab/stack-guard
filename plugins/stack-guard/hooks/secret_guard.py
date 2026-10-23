@@ -29,7 +29,21 @@ SECRET_SHAPES = [
     ("private key", r"-----BEGIN [A-Z ]*PRIVATE KEY-----(?:[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----|[A-Za-z0-9+/=\s]*)"),
     ("Discord bot token", r"[MN][A-Za-z\d]{23}\.[\w-]{6}\.[\w-]{27}"),
     ("password in a URL", r"https?://[^/\s:@]+:[^/\s@]+@"),
+    ("bearer token", r"(?i)(?<=bearer )[A-Za-z0-9._~+/-]{16,}=*"),
 ]
+# A value of any shape, given under a secret-sounding name: `-e HA_TOKEN=...`, `"apiKey": "..."`, `--password ...`.
+# The name stays visible, the value goes (a quoted value up to its closing quote, spaces included).
+# Skips $VAR references, bare numbers, and values already redacted. Name parts are capped at 64 characters so the
+# pattern stays linear on long unbroken text (an uncapped name backtracked: 200k letters never finished).
+NAMED_SECRET = re.compile(
+    r"""((?<![\w.-])(?:[\w.-]{0,64}?(?:TOKEN|SECRET|PASSWORD|PASSWD|API[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL)[\w.-]{0,64}["']?\s{0,8}[=:]"""
+    r"""|--[\w-]{0,64}?(?:token|secret|password|api[_-]?key)\s)\s{0,8})"""
+    r"""(?:"(?![$\[<])([^"\n]{8,})"|'(?![$\[<])([^'\n]{8,})'|(?![$\[<"'])(?!\d+\b)([^\s"'`,;})\]]{8,}))""", re.I)
+
+
+def hide_named(m):
+    quote = '"' if m.group(2) is not None else "'" if m.group(3) is not None else ""
+    return m.group(1) + quote + "[REDACTED secret value]" + quote
 READERS = {"cat", "head", "tail", "less", "more", "bat", "grep", "rg", "ag", "sed", "awk", "cut",
            "strings", "xxd", "od", "hexdump", "base64", "jq", "yq"}
 
@@ -346,6 +360,9 @@ def redact(obj, found):
             obj, n = re.subn(rx, "[REDACTED %s]" % kind, obj)
             if n:
                 found.append(kind)
+        obj, n = NAMED_SECRET.subn(hide_named, obj)
+        if n:
+            found.append("secret value under a secret-sounding name")
         return obj
     if isinstance(obj, list):
         return [redact(x, found) for x in obj]

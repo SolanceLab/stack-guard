@@ -312,6 +312,36 @@ class PostToolUse(unittest.TestCase):
             self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "", ""))
 
 
+class NamedSecretRedaction(unittest.TestCase):
+    """A value of no known shape is still removed when its name sounds secret; the name stays readable."""
+    PLAIN = "a1b2c3d4" * 4  # built in parts, not a real token
+
+    def clean(self, text):
+        r = run(json.dumps({"tool_name": "Bash", "tool_response": {"stdout": text}}), "--post")
+        return json.loads(r.stdout)["hookSpecificOutput"]["updatedToolOutput"]["stdout"] if r.stdout else text
+
+    def test_docker_env_flag(self):
+        out = self.clean("docker run -i --rm -e HA_URL=http://h:8123 -e HA_TOKEN=%s img" % self.PLAIN)
+        self.assertEqual(out, "docker run -i --rm -e HA_URL=http://h:8123 -e HA_TOKEN=[REDACTED secret value] img")
+
+    def test_json_and_flags(self):
+        for text in ('{"apiKey": "%s"}', "DB_PASSWORD=%s", "--token %s", "--api-key=%s", "client_secret: %s"):
+            self.assertNotIn(self.PLAIN, self.clean(text % self.PLAIN), text)
+
+    def test_quoted_value_with_spaces_goes_whole(self):
+        self.assertEqual(self.clean('{"apiKey": "first part second part"}'), '{"apiKey": "[REDACTED secret value]"}')
+        self.assertEqual(self.clean("$env:HA_TOKEN = 'my long pass phrase'"), "$env:HA_TOKEN = '[REDACTED secret value]'")
+        self.assertEqual(self.clean('export GH_TOKEN="${OTHER_TOKEN}"'), 'export GH_TOKEN="${OTHER_TOKEN}"')
+
+    def test_bearer_header(self):
+        self.assertNotIn(self.PLAIN, self.clean("Authorization: Bearer " + self.PLAIN))
+
+    def test_references_counts_and_prose_stay(self):
+        for text in ("HA_TOKEN=$HA_TOKEN", "TOKEN=${GH_TOKEN}", "max_tokens=1000000", "the token was rotated",
+                     "password: <redacted>", "API_KEY=short"):
+            self.assertEqual(self.clean(text), text)
+
+
 class PrivateKeyRedaction(unittest.TestCase):
     def test_whole_pem_block_removed(self):
         pem = "-----BEGIN RSA PRIVATE KEY-----\nPAYLOAD_STILL_VISIBLE_123456\nabc=\n-----END RSA PRIVATE KEY-----"
@@ -387,3 +417,16 @@ class NeverHangs(unittest.TestCase):
                 r = subprocess.run([sys.executable, GUARD, *args], input=payload, capture_output=True, text=True,
                                    timeout=10, env=env)
                 self.assertEqual(r.returncode, 0, (path, event))
+
+
+class NamedSecretStaysFast(unittest.TestCase):
+    """Long unbroken text must not slow the named-secret redaction (an uncapped name pattern backtracked)."""
+
+    def test_two_hundred_thousand_letters_finish_fast(self):
+        import time
+        sys.path.insert(0, os.path.dirname(GUARD))
+        import secret_guard as g
+        for text in ("x" * 200000, "MY_TOKEN_" + "a" * 200000):
+            t = time.time()
+            g.NAMED_SECRET.sub(g.hide_named, text)
+            self.assertLess(time.time() - t, 1.0)
