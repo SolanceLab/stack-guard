@@ -3,6 +3,8 @@ description: Set up (or remove) a daily stack-guard watch on this computer — t
 argument-hint: '[folder, default: this folder] [--time HH:MM, default 09:00] [--no-agents] [--off]'
 ---
 
+**Secrets (applies to every step):** never print, quote, paste or summarise the value of a token, key, password, webhook URL or credential, not even when a tool's output shows one and not even back to the user; a secret that reaches the chat is stored in the session history. Never open files that hold secrets: `.env`, `.env.*`, `~/.claude.json`, `claude_desktop_config.json`, `.mcp.json` `env`/`headers` blocks, `.npmrc`, `.pypirc`, `secrets.yaml` (Home Assistant), `*.pem`, `*.key`, `credentials*`, `.dev.vars`, `wrangler` secrets. Read MCP servers only through the script (`stack_guard.py inventory`, which redacts) or a one-liner that prints names and commands only. When a secret appears anyway, do not repeat it: tell the user which kind of secret and where it showed up, and recommend rotating it.
+
 You are setting up the user's daily stack-guard watch. Arguments: $ARGUMENTS
 
 The daily routine is the plugin's script, run by the computer's own scheduler. Each morning it lists everything, checks every package and runtime against OSV.dev and endoflife.date, then (unless `--no-agents`) hands public package names and versions to two locked-down agents using the user's own Claude Code or Codex: a **news scout** (web tools only) and an **explainer** (no tools). It saves a report, compares it with yesterday, and notifies the user only of what is new. It never fixes anything; fixing stays a conversation with `/stack-guard`.

@@ -1,6 +1,6 @@
 {
   "name": "stack-guard",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "One-prompt security check and safe fix for everything you build and run with Claude Code.",
   "author": { "name": "SolanceLab" },
   "license": "MIT",

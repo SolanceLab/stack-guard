@@ -1220,3 +1220,24 @@ class PrefixFolders(Base):
         with mock.patch.object(sg, "platform_name", lambda: "windows"), mock.patch.object(sg, "run_cmd", run):
             self.run_main("watch-install", self.folder, "--yes")
         self.assertEqual(deleted, [])
+
+
+class NoSecretsInOutput(Base):
+    """23 Oct: an AI printed a user's Home Assistant token while reading an MCP config. The script must never write one."""
+
+    def test_mcp_tokens_never_reach_inventory_or_report(self):
+        token = "FAKE-HA-TOKEN-eyJhbGciOiJIUzI1NiJ9.SECRETPART"
+        with open(os.path.join(self.folder, ".mcp.json"), "w") as f:
+            json.dump({"mcpServers": {"homeassistant": {"command": "npx", "args": ["-y", "ha-mcp", "--token", token],
+                       "env": {"HASS_TOKEN": token, "HASS_URL": "https://user:pw@ha.local:8123"}}}}, f)
+        self.run_main("inventory", self.folder)
+        self.run_main("check", self.folder)
+        written = []
+        for dirpath, _, files in os.walk(self.folder):
+            for fn in files:
+                if fn.endswith((".md", ".json")) and fn != ".mcp.json":
+                    with open(os.path.join(dirpath, fn), encoding="utf-8", errors="replace") as f:
+                        written.append(f.read())
+        blob = "\n".join(written)
+        self.assertNotIn("SECRETPART", blob)
+        self.assertNotIn("user:pw", blob)

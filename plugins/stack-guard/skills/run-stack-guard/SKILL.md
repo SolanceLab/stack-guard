@@ -5,6 +5,8 @@ description: Audit the current project's packages, runtimes, deploy configs and 
 
 # Run stack-guard
 
+**Secrets (applies to every step):** never print, quote, paste or summarise the value of a token, key, password, webhook URL or credential, not even when a tool's output shows one and not even back to the user; a secret that reaches the chat is stored in the session history. Never open files that hold secrets: `.env`, `.env.*`, `~/.claude.json`, `claude_desktop_config.json`, `.mcp.json` `env`/`headers` blocks, `.npmrc`, `.pypirc`, `secrets.yaml` (Home Assistant), `*.pem`, `*.key`, `credentials*`, `.dev.vars`, `wrangler` secrets. Read MCP servers only through the script (`stack_guard.py inventory`, which redacts) or a one-liner that prints names and commands only. When a secret appears anyway, do not repeat it: tell the user which kind of secret and where it showed up, and recommend rotating it.
+
 This is the entry point for tools without a `/stack-guard` command (eg. Codex). In Claude Code, `/stack-guard` does the same thing.
 
 Talk to the user in plain, short words; assume they are busy and not a security expert. Options the user may say: a folder to scan, "audit only" (report, and change none of their code or packages), "yes, fix" (counts as yes to package fixes only).
