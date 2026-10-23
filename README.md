@@ -44,7 +44,7 @@ Open Claude Code in your project folder (or the folder that holds your projects)
 That is the whole thing. (If another plugin also has a `/stack-guard`, use `/stack-guard:stack-guard`.) Optional:
 
 - `/stack-guard ~/Projects/my-bot` checks one folder
-- `/stack-guard --audit-only` reports and changes none of your code or packages (it only writes its report into a `.stack-guard/` folder, which it adds to `.gitignore`)
+- `/stack-guard --audit-only` reports and changes none of your code or packages (it only writes its report into a `.stack-guard/` folder, which ignores itself in git; your own `.gitignore` is never edited)
 - `/stack-guard --yes` reports, then applies the safe package updates without asking again. Node/Python upgrades, service restarts, deploys and commits still get their own question.
 
 You can also just say: *"check my stack for security problems"*.

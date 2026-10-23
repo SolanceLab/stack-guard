@@ -1,4 +1,5 @@
 """Offline tests for stack_guard.py. Run: python3 -m unittest discover -s tests -v"""
+import io
 import json
 import os
 import shutil
@@ -214,13 +215,14 @@ class WebhookTests(Base):
         self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
 
     def test_webhook_set_reads_stdin_and_rejects_other_hosts(self):
-        with mock.patch("sys.stdin") as stdin, mock.patch("sys.stdout"):
+        with mock.patch("sys.stdin") as stdin, mock.patch("sys.stdout"), mock.patch("sys.stderr") as err:
             stdin.readline.return_value = "https://evil.example/x\n"
             self.assertEqual(sg.main(["webhook-set", self.folder]), 1)
             self.assertFalse(os.path.exists(sg.webhook_file(self.folder)))
             stdin.readline.return_value = HOOK + "\n"
             self.assertEqual(sg.main(["webhook-set", self.folder]), 0)
         self.assertEqual(sg.read_text(sg.webhook_file(self.folder)), HOOK)
+        self.assertIn("Paste the Discord or Slack webhook URL and press Enter:", "".join(c.args[0] for c in err.write.call_args_list))
         with mock.patch("sys.stdout"):
             sg.main(["webhook-remove", self.folder])
         self.assertFalse(os.path.exists(sg.webhook_file(self.folder)))
@@ -363,19 +365,16 @@ class AgentTests(Base):
 
 
 class HygieneTests(Base):
-    def test_state_dir_goes_into_root_gitignore_of_a_repo(self):
+    def test_state_dir_ignores_itself_and_the_users_gitignore_is_untouched(self):
         os.makedirs(os.path.join(self.folder, ".git"))
         with open(os.path.join(self.folder, ".gitignore"), "w") as fh:
             fh.write("node_modules")
-        _, out = self.run_main("inventory", self.folder)
-        self.assertIn("Added .stack-guard/ to .gitignore", out)
+        _, out = self.run_main("check", self.folder)
+        self.assertNotIn("gitignore", out)
         with open(os.path.join(self.folder, ".gitignore")) as fh:
-            self.assertEqual(fh.read(), "node_modules\n.stack-guard/\n")
-        self.assertFalse(os.path.exists(os.path.join(self.folder, ".stack-guard", ".gitignore")))
-        _, out = self.run_main("check", self.folder)  # already there: no second line, no message
-        self.assertNotIn("Added", out)
-        with open(os.path.join(self.folder, ".gitignore")) as fh:
-            self.assertEqual(fh.read().count(".stack-guard"), 1)
+            self.assertEqual(fh.read(), "node_modules")
+        with open(os.path.join(self.folder, ".stack-guard", ".gitignore")) as fh:
+            self.assertEqual(fh.read(), "*\n")
 
     def test_no_gitignore_written_outside_a_repo(self):
         self.run_main("inventory", self.folder)
@@ -440,7 +439,7 @@ class SymlinkTests(Base):
 class WatchTests(Base):
     def test_plans_per_platform(self):
         mac = sg.watch_plan("darwin", self.folder, "07:30")
-        self.assertTrue(mac["file"].endswith("dev.stack-guard.watch.plist"))
+        self.assertTrue(mac["file"].endswith("dev.stack-guard.watch.%s.plist" % sg.folder_hash(self.folder)))
         self.assertIn(b"<integer>30</integer>", mac["content"])
         self.assertIn("--notify", mac["show"])
         lin = sg.watch_plan("linux", self.folder, "07:30")
@@ -487,25 +486,27 @@ class WatchTests(Base):
         calls = []
         with mock.patch.object(sg, "run_cmd", lambda a, **k: calls.append(a) or (0, "")):
             self.run_main("watch-install", self.folder, "--yes")
-            plist = os.path.join(self.home, "Library", "LaunchAgents", "dev.stack-guard.watch.plist")
+            plist = os.path.join(self.home, "Library", "LaunchAgents", "dev.stack-guard.watch.%s.plist" % sg.folder_hash(self.folder))
             self.assertTrue(os.path.exists(plist))
-            self.run_main("watch-remove")
+            self.run_main("watch-remove", self.folder)
         self.assertFalse(os.path.exists(plist))
         self.assertTrue(any([os.path.basename(c[0]), c[1]] == ["launchctl", "bootstrap"] for c in calls))
 
-    def test_cron_install_replaces_old_line(self):
+    def test_cron_install_replaces_this_folders_line_only(self):
         sent = []
+        h = sg.folder_hash(self.folder)
 
-        def run(args, input_text=None, timeout=30, cwd=None):
+        def run(args, input_text=None, timeout=30, cwd=None, **kw):
             if [os.path.basename(args[0])] + list(args[1:]) == ["crontab", "-l"]:
-                return 0, "0 1 * * * other\n5 5 * * * old # dev.stack-guard.watch"
+                return 0, "0 1 * * * other\n5 5 * * * old # stack-guard watch %s\n6 6 * * * elsewhere # stack-guard watch aaaaaaaaaaaa" % h
             sent.append(input_text)
             return 0, ""
         with mock.patch.object(sg, "platform_name", lambda: "linux"), mock.patch.object(sg, "run_cmd", run):
             self.run_main("watch-install", self.folder, "--yes")
         self.assertIn("other", sent[0])
+        self.assertIn("6 6 * * * elsewhere", sent[0])  # another folder's schedule stays
         self.assertNotIn("5 5 * * *", sent[0])
-        self.assertEqual(sent[0].count("dev.stack-guard.watch"), 1)
+        self.assertEqual(sent[0].count("# stack-guard watch %s" % h), 1)
 
 
 
@@ -601,7 +602,7 @@ class Round3Fixes(Base):
         calls = []
         with mock.patch.object(sg, "run_cmd", lambda a, **k: calls.append(a) or (0, "")):
             code, out = self.run_main("watch-install", self.folder, "--yes")
-        path = os.path.join(self.home, "Library", "LaunchAgents", "dev.stack-guard.watch.plist")
+        path = os.path.join(self.home, "Library", "LaunchAgents", "dev.stack-guard.watch.%s.plist" % sg.folder_hash(self.folder))
         with open(path, "rb") as fh:
             return sg.plistlib.loads(fh.read()), out
 
@@ -641,8 +642,8 @@ class Round3Fixes(Base):
 
     def test_windows_metacharacters_stay_quoted_or_refuse(self):
         evil = os.path.join(self.home, "demo&calc&rem")
-        tr = sg.watch_plan("windows", evil, "07:30")["install"][0][7]  # the /TR value cmd.exe receives
-        self.assertIn('"%s"' % evil, tr)
+        plan = sg.watch_plan("windows", evil, "07:30")
+        self.assertIn('"%s"' % evil, plan["cmd_text"])  # the folder is quoted inside the .cmd file
         for bad in ("a%PATH%b", 'a"b'):
             with self.assertRaises(ValueError):
                 sg.watch_plan("windows", os.path.join(self.home, bad), "07:30")
@@ -691,15 +692,14 @@ class Round3Fixes(Base):
     def test_mcp_names_need_exact_lockfile_proof(self):
         inv = {"runtimes": [], "projects": [{"direct_npm": [], "private_npm": [], "deploy": [], "packages": [
             {"ecosystem": "npm", "name": "lodash", "version": "4.0.0", "dev": False}]}], "mcp": [
-            {"name": "a", "source": "s", "package": {"ecosystem": "npm", "name": "unlisted-mcp", "version": "1.0.0"}, "unpinned": False, "unpinned_package": None, "command": "npx"},
-            {"name": "b", "source": "s", "package": None, "unpinned": True, "unpinned_package": "other-unlisted", "command": "npx"}]}
+            {"name": "a", "source": "s", "package": {"ecosystem": "npm", "name": "@unlisted/mcp", "version": "1.0.0"}, "unpinned": False, "unpinned_package": None, "command": "npx"},
+            {"name": "b", "source": "s", "package": None, "unpinned": True, "unpinned_package": "@other/unlisted", "command": "npx"}]}
         text = "\n".join(sg.public_components(inv))
-        self.assertNotIn("unlisted-mcp", text)
-        self.assertNotIn("other-unlisted", text)
+        self.assertNotIn("unlisted", text)
         rep = sg.make_report(dict(inv, folder="x", unreadable=[], projects=[dict(inv["projects"][0], path=".", not_parsed=[])]), [], [], True)
         self.assertIn("kept out of the news search (no public proof)", sg.render_report(rep, {"first": True, "notes": []}))
         _, body = sg.notify_text({"date": "d", "not_checked": []}, {"first": True, "new": [], "fixed": [], "runtimes": [], "mcp": []})
-        self.assertNotIn("unlisted-mcp", body)
+        self.assertNotIn("unlisted", body)
 
 
 class Round4Fixes(Base):
@@ -803,5 +803,350 @@ class Round4Fixes(Base):
         self.assertFalse(os.path.exists(os.path.join(self.folder, ".stack-guard", "STACK-INVENTORY.md")))
 
 
+
+class Round5Fixes(Base):
+    """Fix round 5 (23 Oct): news by importance, the audit never dirties the repo, cron safety, one schedule per
+    folder, Windows .cmd wrapper, small items."""
+
+    def write(self, rel, text):
+        path = os.path.join(self.folder, rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as fh:
+            fh.write(text)
+
+    # 1. news coverage
+    def _py_inv(self, extra=None):
+        shutil.rmtree(self.folder)
+        os.makedirs(self.folder)
+        self.write("svc/requirements.txt", "requests==2.25.0\nflask==2.0.0 ; python_version>'3'\n# note\n")
+        self.write("svc/requirements-dev.txt", "pytest==8.0.0\n")
+        self.write("svc/fly.toml", 'app = "svc"\n')
+        for rel, text in (extra or {}).items():
+            self.write(rel, text)
+        return sg.build_inventory(self.folder)
+
+    def test_news_order_is_importance_and_pypi_direct_deps_join(self):
+        inv = self._py_inv()
+        out = sg.public_components(inv)
+        # PyPI names never join the news list (a private index can live outside the project: Codex P1, 23 Oct)
+        self.assertFalse([c for c in out if c.endswith("(PyPI)")])
+        inv["mcp"] = [{"name": "m", "source": "s", "command": "npx", "unpinned": True, "unpinned_package": "plain-mcp",
+                       "package": None}]
+        inv["projects"][0]["packages"].append({"ecosystem": "npm", "name": "plain-mcp", "version": "1.0.0", "dev": True, "lockfile": "package-lock.json"})  # lockfile proof
+        out = sg.ordered_components(inv)
+        self.assertIn("plain-mcp (npm, MCP server, no fixed version)", out)
+
+    def test_private_index_keeps_pypi_names_out(self):
+        for rel, text in (("svc/requirements.txt", "--extra-index-url https://pkgs.example/simple\nrequests==2.25.0\n"),
+                          ("svc/pyproject.toml", '[project]\ndependencies = ["requests"]\n[[tool.uv.index]]\nurl = "https://x/simple"\n'),
+                          ("svc/pyproject.toml", '[tool.poetry.dependencies]\nrequests = "*"\n[[tool.poetry.source]]\nname = "p"\n'),
+                          ("svc/.env.local", "PIP_INDEX_URL=https://secret-host.example/simple\n")):
+            inv = self._py_inv({rel: text})
+            self.assertTrue(inv["projects"][0]["private_index"], rel)
+            self.assertFalse([c for c in sg.public_components(inv) if "(PyPI)" in c], rel)
+            self.assertNotIn("secret-host", json.dumps(inv))  # names only, never values
+
+    def test_pyproject_direct_deps_and_unscoped_mcp(self):
+        inv = self._py_inv({"svc/pyproject.toml": '[project]\ndependencies = ["Flask>=2", "requests[socks]"]\n'})
+        self.assertEqual(sorted(set(inv["projects"][0]["direct_pypi"])), ["flask", "requests"])
+        inv["mcp"] = [{"name": "a", "source": "s", "command": "npx", "unpinned": False, "unpinned_package": None,
+                       "package": {"ecosystem": "npm", "name": "free-mcp", "version": "1.0.0"}},
+                      {"name": "b", "source": "s", "command": "npx", "unpinned": False, "unpinned_package": None,
+                       "package": {"ecosystem": "npm", "name": "@co/priv", "version": "1.0.0"}}]
+        out = "\n".join(sg.public_components(inv))
+        self.assertNotIn("free-mcp", out)  # round 5b: an unscoped name needs lockfile proof too (changed from "included")
+        self.assertNotIn("@co/priv", out)
+
+    def test_cap_keeps_the_important_ones_and_reports_the_drop(self):
+        inv = {"runtimes": [{"name": "node", "version": "22.0.0"}], "mcp": [], "projects": [{
+            "deploy": [], "direct_npm": ["p%03d" % i for i in range(100)], "private_npm": [],
+            "packages": [{"ecosystem": "npm", "name": "p%03d" % i, "version": "1.0.0", "dev": False} for i in range(100)]}]}
+        out = sg.public_components(inv)
+        self.assertEqual(len(out), sg.NEWS_CAP)
+        self.assertEqual(out[0], "node 22.0.0")
+        rep = {"agent_notes": [], "news": ""}
+        with mock.patch.object(sg, "find_agent_cli", lambda root=None: "/x/claude"), \
+                mock.patch.object(sg, "run_agent", lambda *a: (True, "ok")):
+            sg.run_agents(inv, [], {"first": True, "new_keys": []}, rep, [])
+        self.assertTrue(any("News search covered 80 of 101" in n for n in rep["agent_notes"]))
+
+    # 2. the audit never dirties the repo
+    def test_check_leaves_the_repo_clean_and_inventory_copy_stays_inside_state_dir(self):
+        os.makedirs(os.path.join(self.folder, ".git"))
+        before = set(os.listdir(self.folder))
+        self.run_main("check", self.folder)
+        self.assertEqual(set(os.listdir(self.folder)) - before, {".stack-guard"})
+        self.assertTrue(os.path.exists(os.path.join(self.folder, ".stack-guard", "STACK-INVENTORY.md")))
+        self.assertFalse(os.path.exists(os.path.join(self.folder, ".gitignore")))
+        with open(os.path.join(self.folder, ".stack-guard", ".gitignore")) as fh:
+            self.assertEqual(fh.read(), "*\n")
+
+    def test_check_keeps_the_inventory_commands_ownership_record(self):
+        self.run_main("inventory", self.folder)
+        self.run_main("check", self.folder)
+        self.run_main("inventory", self.folder)  # still ours: refreshed in place
+        mine = os.path.join(self.folder, "STACK-INVENTORY.md")
+        self.assertTrue(os.path.exists(mine))
+        self.assertIn("review before committing", sg.read_text(mine))
+
+    def test_watch_install_does_not_touch_gitignore(self):
+        os.makedirs(os.path.join(self.folder, ".git"))
+        with mock.patch.object(sg, "run_cmd", lambda a, **k: (0, "")):
+            self.run_main("watch-install", self.folder, "--yes")
+        self.assertFalse(os.path.exists(os.path.join(self.folder, ".gitignore")))
+
+    # 3. cron safety
+    def test_unreadable_crontab_stops_without_changing_anything(self):
+        sent = []
+
+        def run(args, input_text=None, timeout=30, cwd=None, stderr_out=None):
+            if list(args[1:]) == ["-l"]:
+                if stderr_out is not None:
+                    stderr_out.append("crontab: error while loading shared libraries")
+                return 1, ""
+            sent.append(input_text)
+            return 0, ""
+        with mock.patch.object(sg, "platform_name", lambda: "linux"), mock.patch.object(sg, "run_cmd", run):
+            code, out = self.run_main("watch-install", self.folder, "--yes")
+        self.assertEqual(code, 1)
+        self.assertIn("Nothing was changed", out)
+        self.assertEqual(sent, [])
+
+    def test_no_crontab_yet_counts_as_empty(self):
+        sent = []
+
+        def run(args, input_text=None, timeout=30, cwd=None, stderr_out=None):
+            if list(args[1:]) == ["-l"]:
+                if stderr_out is not None:
+                    stderr_out.append("no crontab for anne")
+                return 1, ""
+            sent.append(input_text)
+            return 0, ""
+        with mock.patch.object(sg, "platform_name", lambda: "linux"), mock.patch.object(sg, "run_cmd", run):
+            code, _ = self.run_main("watch-install", self.folder, "--yes")
+        self.assertEqual(code, 0)
+        self.assertEqual(len(sent), 1)
+
+    # 4. one schedule per folder
+    def test_two_folders_get_two_schedules_and_remove_acts_on_one(self):
+        other = os.path.join(self.tmp, "other")
+        os.makedirs(other)
+        agents = os.path.join(self.home, "Library", "LaunchAgents")
+        with mock.patch.object(sg, "run_cmd", lambda a, **k: (0, "")):
+            self.run_main("watch-install", self.folder, "--yes")
+            self.run_main("watch-install", other, "--yes")
+            self.assertEqual(len(os.listdir(agents)), 2)
+            self.run_main("watch-remove", self.folder)
+            self.assertEqual(os.listdir(agents), ["dev.stack-guard.watch.%s.plist" % sg.folder_hash(other)])
+            code, out = self.run_main("watch-remove", "--all")
+        self.assertEqual(os.listdir(agents), [])
+        self.assertIn("Removed 1 stack-guard schedule", out)
+
+    # upgrade path: the v1 single schedule goes away when the folder schedule installs
+    def test_install_removes_the_legacy_mac_schedule(self):
+        agents = os.path.join(self.home, "Library", "LaunchAgents")
+        os.makedirs(agents, exist_ok=True)
+        legacy = os.path.join(agents, "dev.stack-guard.watch.plist")
+        open(legacy, "w").close()
+        with mock.patch.object(sg, "run_cmd", lambda a, **k: (0, "")):
+            code, out = self.run_main("watch-install", self.folder, "--yes")
+        self.assertEqual(code, 0)
+        self.assertFalse(os.path.exists(legacy))
+        self.assertEqual(os.listdir(agents), ["dev.stack-guard.watch.%s.plist" % sg.folder_hash(self.folder)])
+
+    def test_install_removes_the_legacy_cron_line(self):
+        sent = []
+
+        def run(args, input_text=None, timeout=30, cwd=None, stderr_out=None):
+            if list(args[1:]) == ["-l"]:
+                return 0, "0 1 * * * keep\n5 8 * * * old # dev.stack-guard.watch"
+            sent.append(input_text)
+            return 0, ""
+        with mock.patch.object(sg, "platform_name", lambda: "linux"), mock.patch.object(sg, "run_cmd", run):
+            code, _ = self.run_main("watch-install", self.folder, "--yes")
+        self.assertEqual(code, 0)
+        self.assertNotIn("dev.stack-guard.watch\n", sent[-1])
+        self.assertIn("keep", sent[-1])
+        self.assertIn("# stack-guard watch " + sg.folder_hash(self.folder), sent[0])
+
+    def test_windows_install_deletes_the_legacy_task_and_remove_all_finds_it(self):
+        calls = []
+
+        def run(args, input_text=None, timeout=30, cwd=None, stderr_out=None):
+            calls.append(list(args[1:3]) + ([args[args.index("/TN") + 1]] if "/TN" in args else []))
+            if "/FO" in args:
+                return 0, '"\\dev.stack-guard.watch","08:00","Ready"\n'
+            return 0, ""
+        with mock.patch.object(sg, "platform_name", lambda: "windows"), mock.patch.object(sg, "run_cmd", run):
+            self.run_main("watch-install", self.folder, "--yes")
+            self.assertIn(["/Delete", "/TN", "dev.stack-guard.watch"], [c[:1] + ["/TN", c[2]] if len(c) > 2 else c for c in calls])
+            calls.clear()
+            code, out = self.run_main("watch-remove", "--all")
+        self.assertIn("Found: dev.stack-guard.watch", out)
+        self.assertIn("Removed 1 stack-guard schedule", out)
+
+    def test_cron_remove_all_takes_every_stack_guard_line_only(self):
+        sent = []
+
+        def run(args, input_text=None, timeout=30, cwd=None, stderr_out=None):
+            if list(args[1:]) == ["-l"]:
+                return 0, "0 1 * * * keep\n1 1 * * * a # stack-guard watch aaaaaaaaaaaa\n2 2 * * * b # stack-guard watch bbbbbbbbbbbb"
+            sent.append(input_text)
+            return 0, ""
+        with mock.patch.object(sg, "platform_name", lambda: "linux"), mock.patch.object(sg, "run_cmd", run):
+            code, _ = self.run_main("watch-remove", "--all")
+        self.assertEqual(code, 0)
+        self.assertEqual(sent, ["0 1 * * * keep\n"])
+
+    # 5. Windows wrapper
+    def test_windows_schedule_runs_a_cmd_file_with_spaces_in_its_path(self):
+        spaced = os.path.join(self.tmp, "my home dir")
+        os.makedirs(spaced)
+        with mock.patch.object(sg, "home_dir", lambda: spaced), mock.patch.object(sg, "platform_name", lambda: "windows"), \
+                mock.patch.dict(os.environ, {"APPDATA": ""}):
+            plan = sg.watch_plan("windows", self.folder, "07:30")
+            create = plan["install"][0]
+            self.assertEqual(create[create.index("/TR") + 1], '"%s"' % plan["cmd_file"])
+            self.assertIn("my home dir", plan["cmd_file"])
+            self.assertIn('\\"%s\\"' % plan["cmd_file"], sg.subprocess.list2cmdline(create))  # one quoted argument for schtasks
+            lines = plan["cmd_text"].splitlines()
+            self.assertEqual(lines[0], "@echo off")
+            self.assertTrue(lines[1].endswith('>> "%s" 2>&1' % plan["log"]))
+            self.assertIn('"%s"' % sg.stable_script_path(), lines[1])
+            self.assertIn("watch-%s.cmd" % sg.folder_hash(self.folder), plan["cmd_file"])
+            self.assertEqual(create[create.index("/TN") + 1], "stack-guard watch " + sg.folder_hash(self.folder))
+            with mock.patch.object(sg, "run_cmd", lambda a, **k: (0, "")):
+                self.assertTrue(sg.apply_plan(plan, False))
+            self.assertEqual(sg.read_text(plan["cmd_file"]), plan["cmd_text"])
+
+    # 6/7 small items
+    def test_default_time_is_nine(self):
+        with mock.patch.object(sg, "cmd_watch_install", return_value=0) as call:
+            sg.main(["watch-install", self.folder])
+        self.assertEqual(call.call_args.args[1], "09:00")
+
+    def test_webhook_set_refuses_an_empty_line(self):
+        with mock.patch("sys.stdin") as stdin, mock.patch("sys.stdout"), mock.patch("sys.stderr"):
+            stdin.readline.return_value = "\n"
+            self.assertEqual(sg.main(["webhook-set", self.folder]), 1)
+        self.assertFalse(os.path.exists(sg.webhook_file(self.folder)))
+
+    def test_depth_six_and_a_note_for_a_deeper_lockfile_folder(self):
+        deep = "/".join(["d"] * 6)
+        self.write(deep + "/package-lock.json", '{"packages": {}}')  # project at depth 6: found
+        self.write(deep + "/x/package-lock.json", '{"packages": {}}')  # depth 7: skipped, with a note
+        inv = sg.build_inventory(self.folder)
+        self.assertIn(deep, [p["path"] for p in inv["projects"]])
+        self.assertEqual(inv["too_deep"], [deep + "/x"])
+        rep = sg.make_report(inv, [], [], True)
+        self.assertIn("folder deeper than 6 levels: %s/x" % deep, rep["not_checked"])
+
+    # round 5b: Codex P1/P2 findings
+    def test_unscoped_mcp_needs_lockfile_proof_and_unpinned_too(self):
+        inv = {"runtimes": [], "projects": [{"direct_npm": [], "private_npm": [], "deploy": [], "packages": [
+            {"ecosystem": "npm", "name": "proven-mcp", "version": "1.0.0", "dev": False}]}], "mcp": [
+            {"package": {"ecosystem": "npm", "name": "proven-mcp", "version": "1.0.0"}, "unpinned": False, "unpinned_package": None, "command": "npx"},
+            {"package": {"ecosystem": "npm", "name": "verdaccio-only", "version": "1.0.0"}, "unpinned": False, "unpinned_package": None, "command": "npx"},
+            {"package": None, "unpinned": True, "unpinned_package": "verdaccio-other", "command": "npx"}]}
+        text = "\n".join(sg.public_components(inv))
+        self.assertIn("proven-mcp 1.0.0 (npm, MCP server)", text)
+        self.assertNotIn("verdaccio", text)
+
+    def test_direct_url_git_and_path_python_deps_stay_out_of_news(self):
+        inv = self._py_inv({
+            "svc/requirements.txt": "requests==2.25.0\ncorp-lib @ https://private.example/corp-lib-1.0.tar.gz\n"
+                                    "git+https://git.example/x.git#egg=gitlib\n-e ./localpkg\n",
+            "svc/pyproject.toml": '[project]\ndependencies = ["requests", "corp-lib", "gitlib"]\n'
+                                  '[tool.poetry.dependencies]\npython = "^3.11"\npoetrygit = {git = "https://git.example/p.git"}\n'
+                                  '[tool.uv.sources]\nuvlocal = {path = "../uvlocal"}\n',
+            "svc/uv.lock": 'version = 1\n[[package]]\nname = "requests"\nversion = "2.25.0"\nsource = { registry = "https://pypi.org/simple" }\n'
+                           '[[package]]\nname = "corp-lib"\nversion = "1.0"\nsource = { url = "https://private.example/c.tgz" }\n'
+                           '[[package]]\nname = "gitlib"\nversion = "0.1"\nsource = { git = "https://git.example/x.git" }\n'
+                           '[[package]]\nname = "intra"\nversion = "3.0"\nsource = { registry = "https://pypi.corp.example/simple" }\n'})
+        inv["projects"][0]["private_index"] = False
+        text = "\n".join(sg.public_components(inv))
+        self.assertNotIn("requests 2.25.0 (PyPI)", text)
+        for name in ("corp-lib", "gitlib", "poetrygit", "uvlocal", "intra"):
+            self.assertNotIn(name, text)
+        self.assertFalse(sg.shareable({"ecosystem": "PyPI", "package": "Corp_Lib"}, inv))
+        self.assertTrue(sg.shareable({"ecosystem": "PyPI", "package": "requests"}, inv))
+
+    def test_poetry_lock_non_pypi_source_is_private(self):
+        inv = self._py_inv({"svc/poetry.lock": '[[package]]\nname = "requests"\nversion = "2.25.0"\n'
+                                               '[[package]]\nname = "gitdep"\nversion = "1.0"\n[package.source]\ntype = "git"\nurl = "https://g.example/x"\n'})
+        self.assertIn("gitdep", inv["projects"][0]["private_py"])
+        self.assertNotIn("requests", inv["projects"][0]["private_py"])
+
+    def test_lockfile_nested_below_the_depth_limit_gets_a_note(self):
+        deep = "/".join(["d"] * 6)
+        self.write(deep + "/x/y/z/package-lock.json", '{"packages": {}}')  # three levels below the pruned folder
+        inv = sg.build_inventory(self.folder)
+        self.assertEqual(inv["too_deep"], [deep + "/x"])
+
+    def test_windows_remove_keeps_the_wrapper_when_the_task_delete_fails(self):
+        plan = sg.watch_plan("windows", self.folder, "09:00", installing=False)
+        os.makedirs(os.path.dirname(plan["cmd_file"]), exist_ok=True)
+        sg.write_file(plan["cmd_file"], plan["cmd_text"])
+        self.addCleanup(lambda: os.path.exists(plan["cmd_file"]) and os.remove(plan["cmd_file"]))
+        with mock.patch.object(sg, "run_cmd", lambda a, **k: (1, "")):
+            self.assertFalse(sg.apply_plan(plan, True))
+        self.assertTrue(os.path.exists(plan["cmd_file"]))
+        with mock.patch.object(sg, "run_cmd", lambda a, **k: (0, "")):
+            self.assertTrue(sg.apply_plan(plan, True))
+        self.assertFalse(os.path.exists(plan["cmd_file"]))
+
+    def test_mac_remove_keeps_the_plist_when_bootout_fails(self):
+        plan = sg.watch_plan("darwin", self.folder, "09:00", installing=False)
+        os.makedirs(os.path.dirname(plan["file"]), exist_ok=True)
+        open(plan["file"], "w").close()
+        self.addCleanup(lambda: os.path.exists(plan["file"]) and os.remove(plan["file"]))
+
+        def fail(a, stderr_out=None, **k):
+            if stderr_out is not None:
+                stderr_out.append("Boot-out failed: 5: Input/output error")
+            return 5, ""
+        with mock.patch.object(sg, "run_cmd", fail):
+            self.assertFalse(sg.apply_plan(plan, True))
+        self.assertTrue(os.path.exists(plan["file"]))
+
+        def not_loaded(a, stderr_out=None, **k):
+            if stderr_out is not None:
+                stderr_out.append("Could not find service")
+            return 113, ""
+        with mock.patch.object(sg, "run_cmd", not_loaded):  # never loaded: the plist still goes
+            self.assertTrue(sg.apply_plan(plan, True))
+        self.assertFalse(os.path.exists(plan["file"]))
+
+    def test_private_pypi_names_never_reach_osv(self):
+        def proj(path, **kw):
+            return dict({"path": path, "direct_npm": [], "private_npm": [], "private_py": [], "private_index": False, "deploy": [],
+                         "not_parsed": [], "packages": [dict(ecosystem="PyPI", name=n, version="1.0.0", dev=False)
+                                                        for n in ("requests", "gitdep", "Corp_Lib")]}, **kw)
+        inv = {"runtimes": [], "mcp": [], "projects": [proj("a", private_py=["gitdep"]), proj("b", private_index=True)]}
+        stats = {}
+        t = sg.collect_targets(inv, stats)
+        self.assertEqual([(x["project"], x["name"]) for x in t], [("a", "requests"), ("a", "Corp_Lib")])
+        self.assertNotIn("gitdep", [x["name"] for x in t])
+        self.assertEqual(stats["private"], 3)
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+class Round5HandFixes(Base):
+    def test_pypi_names_never_reach_news_even_without_project_index(self):
+        inv = {"runtimes": [], "mcp": [], "projects": [{"direct_npm": [], "private_npm": [], "private_index": False,
+               "packages": [{"ecosystem": "PyPI", "name": "corp-internal", "version": "1.0", "dev": False}], "deploy": []}]}
+        self.assertFalse([c for c in sg.public_components(inv) if "corp-internal" in c])
+
+    def test_failed_legacy_cleanup_is_reported_not_installed(self):
+        with mock.patch.object(sg, "apply_plan", lambda plan, dry: True), \
+             mock.patch.object(sg, "remove_legacy", lambda plat, root: False), \
+             mock.patch.object(sg, "stable_script_path", lambda: "/x/stack_guard.py"):
+            out, err = io.StringIO(), io.StringIO()
+            with mock.patch("sys.stdout", out), mock.patch("sys.stderr", err):
+                code = sg.cmd_watch_install(self.folder, "09:00", True, False)
+        self.assertEqual(code, 1)
+        self.assertIn("could not be removed", err.getvalue())
+        self.assertNotIn("Installed.\n", out.getvalue())

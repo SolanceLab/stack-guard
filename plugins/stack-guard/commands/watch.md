@@ -11,12 +11,12 @@ Script path: `"${CLAUDE_PLUGIN_ROOT}/scripts/stack_guard.py"`. Folder: the named
 
 ## With `--off`
 
-Run `python3 <script> watch-remove "<folder>"` and `python3 <script> webhook-remove "<folder>"` (the second only if the user wants the webhook gone too). Tell them the reports stay in `<folder>/.stack-guard/reports/`. Stop.
+Run `python3 <script> watch-remove "<folder>"` (each folder has its own schedule; add `--all` to list and remove every stack-guard schedule on this computer) and `python3 <script> webhook-remove "<folder>"` (the second only if the user wants the webhook gone too). Tell them the reports stay in `<folder>/.stack-guard/reports/`. Stop.
 
 ## Setting it up
 
 1. **First check, now.** Run `python3 <script> check "<folder>"` (add `--agents` unless the user passed `--no-agents`) so there is a baseline and the user sees today's state. Summarise the report in plain words.
-2. **Optional Discord or Slack.** Ask once: "Also send the daily summary to a Discord or Slack channel? (yes / no)". On yes, ask them to create a channel webhook, then run `python3 <script> webhook-set "<folder>"` and let them paste the URL into its prompt (it reads from the keyboard, stores it outside the project with owner-only access, and accepts only Discord/Slack webhook URLs). Never repeat the URL back.
+2. **Optional Discord or Slack.** Ask once: "Also send the daily summary to a Discord or Slack channel? (yes / no)". On yes, ask them to create a channel webhook, then tell them to run `python3 <script> webhook-set "<folder>"` **in their own terminal** and paste the URL at its prompt ("Paste the Discord or Slack webhook URL and press Enter:"). An AI cannot type the secret for them, and the URL must never pass through this chat. It stores the URL outside the project with owner-only access and accepts only Discord/Slack webhook URLs. Never ask for the URL or repeat it back.
 3. **Show the schedule entry.** Run `python3 <script> watch-install "<folder>" --time <HH:MM>` (default 09:00; add `--no-agents` when the user passed it) without `--yes`. It prints the exact launchd / cron / Task Scheduler entry and which agent CLI it found. Show the user that entry and say: the agents use their own Claude/Codex plan, a few cents of usage a day; `--no-agents` turns them off.
 4. **Ask:** "Add this daily check at <time>? (yes / no)". Install nothing before the yes.
 5. **Install** after the yes: the same command with `--yes` (and `--no-agents` if used).

@@ -14,7 +14,7 @@ The list is made by the plugin's script, so it comes out the same every time. Ru
 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/stack_guard.py" inventory "<folder>"
 ```
 
-It writes `<folder>/STACK-INVENTORY.md` and `<folder>/.stack-guard/inventory.json`, adds `.stack-guard/` to the folder's `.gitignore` when it is a git repo, and prints one summary line. It sends nothing over the network.
+It writes `<folder>/STACK-INVENTORY.md` and `<folder>/.stack-guard/inventory.json`, keeps `.stack-guard/` out of git by itself (the folder holds its own `.gitignore` with `*`; your `.gitignore` is never edited), and prints one summary line. `STACK-INVENTORY.md` is written only by this command; `/stack-guard` checks keep their copy inside `.stack-guard/`. It sends nothing over the network.
 3. Read `STACK-INVENTORY.md` and tell the user, in plain words: how many projects, deploy configs, MCP servers and runtimes it found; the "Needs a look" rows first; any MCP server that updates itself on every start; any runtime past its support date.
 4. When `python3` is missing, say so and offer to build the list by hand from the `stack-guard:stack-audit` skill's steps 1, 2b and 3, written in the same shape.
 5. Suggest next: `/stack-guard` to check everything on the list for security holes, and `/stack-guard:watch` to check it every day.

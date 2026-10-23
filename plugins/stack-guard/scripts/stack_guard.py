@@ -4,17 +4,18 @@
 Python 3.9+, standard library only. Run:  python3 stack_guard.py <command> [folder]
 
   inventory [folder]     write STACK-INVENTORY.md and .stack-guard/inventory.json
-  check [folder]         inventory + look-up of known security problems (OSV) and
+  check [folder]         inventory copy in .stack-guard/ + look-up of known security problems (OSV) and
                          runtime support dates (endoflife.date); writes a dated report
   check --notify         also send a desktop notification (and a webhook if you set one)
   check --agents         also run a news-search agent and a plain-words explainer (your own claude or codex CLI)
   webhook-set [folder]   read a Discord or Slack webhook address from stdin and keep it outside the project
   webhook-remove [folder]
-  watch-install [folder] [--time HH:MM] [--yes]   show (or with --yes install) a daily check
-  watch-remove           remove that daily check
+  watch-install [folder] [--time HH:MM] [--yes]   show (or with --yes install) a daily check for that folder
+  watch-remove [folder] [--all]   remove that folder's daily check (--all: every stack-guard schedule)
 
 Only package names and versions leave your machine. Nothing is installed or changed in your
-projects. Everything is written inside <folder>/.stack-guard/ plus STACK-INVENTORY.md.
+projects. check writes only inside <folder>/.stack-guard/ (which ignores itself in git); only the
+explicit inventory command also writes <folder>/STACK-INVENTORY.md.
 """
 from __future__ import annotations
 
@@ -44,7 +45,10 @@ except ImportError:  # shortcut: older Pythons list poetry.lock / uv.lock as "no
 LABEL = "dev.stack-guard.watch"
 VERSION = "1.2.0"
 STATE_DIR = ".stack-guard"
-MAX_DEPTH = 4
+MAX_DEPTH = 6
+NEWS_CAP = 80
+DEFAULT_TIME = "09:00"
+CAP_NOTE = "News search covered "
 SKIP_DIRS = {"node_modules", "venv", "dist", "build", "worktrees", "__pycache__"}  # dot-folders are skipped too
 SEV_ORDER = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1, "UNKNOWN": 0}
 OSV_BATCH = "https://api.osv.dev/v1/querybatch"
@@ -79,10 +83,13 @@ def platform_name():
     return "darwin" if p == "darwin" else "windows" if p.startswith("win") else "linux"
 
 
-def run_cmd(args, input_text=None, timeout=30, cwd=None):
-    """Run a fixed command (list args, never a shell). Returns (exit code, stdout); 127 if missing."""
+def run_cmd(args, input_text=None, timeout=30, cwd=None, stderr_out=None):
+    """Run a fixed command (list args, never a shell). Returns (exit code, stdout); 127 if missing.
+    stderr_out, when it is a list, receives the command's stderr text as its one item."""
     try:
         p = subprocess.run(args, input=input_text, capture_output=True, text=True, timeout=timeout, cwd=cwd)
+        if stderr_out is not None:
+            stderr_out.append((p.stderr or "").strip())
         return p.returncode, (p.stdout or "").strip()
     except (OSError, subprocess.SubprocessError):
         return 127, ""
@@ -247,10 +254,11 @@ def lockfile_public_npm(inv):
 
 
 def mcp_news_proof(m, proven):
-    """Does this MCP entry's package have exact lockfile proof? PyPI names never do."""
+    """May this MCP entry's npm package go to the news search? Its name passes the grammar AND has exact lockfile
+    proof of a public origin, scoped or not (a private registry can serve unscoped names too). PyPI names never qualify."""
     k = m.get("package")
     name = k["name"] if k and k["ecosystem"] == "npm" else m.get("unpinned_package") if m.get("command") in ("npx", "bunx") else None
-    return bool(name and name != REDACTED and name in proven)
+    return bool(name and name != REDACTED and valid_name("npm", name) and name in proven)
 
 
 def shareable(f, inv):
@@ -259,6 +267,8 @@ def shareable(f, inv):
     if f.get("ecosystem") == "npm":
         private = {n for p in inv["projects"] for n in p["private_npm"]}
         return f["package"] not in private and npm_name_public(f["package"])
+    if f.get("ecosystem") == "PyPI":
+        return norm_py(f["package"]) not in {n for p in inv["projects"] for n in p.get("private_py", [])}
     return True
 
 
@@ -270,12 +280,80 @@ def npm_provably_public(name, resolved):
     return not name.startswith("@") or name.split("/", 1)[0] in PUBLIC_NPM_SCOPES
 
 
+INDEX_FLAG = re.compile(r"^\s*(--index-url|--extra-index-url|-i)(\s|=|$)", re.I)
+INDEX_ENV = re.compile(r"^\s*(?:export\s+)?(?:PIP|UV)_(?:EXTRA_)?INDEX_URL\s*=", re.M)
+
+
+def norm_py(name):
+    return re.sub(r"[-_.]+", "-", str(name).lower())
+
+
+def non_registry_name(line):
+    """The normalized package name when a requirements line installs from a direct URL, git or a path (`name @ url`,
+    `-e path`, `git+https://...#egg=name`), else None. A source with no readable name gives "?" (nothing matches it)."""
+    if not (re.search(r"\s@\s|^[A-Za-z0-9_.\-]+(\[[^\]]*\])?@|://|^-e\b|^-r\b.*://|^\.{0,2}/", line) or line.startswith(".")):
+        return None
+    if line.startswith(("-r", "-c")) or line.startswith("#"):
+        return None
+    m = re.match(r"^([A-Za-z0-9][A-Za-z0-9_.\-]*)\s*(?:\[[^\]]*\])?\s*@", line) or re.search(r"[#&]egg=([A-Za-z0-9_.\-]+)", line)
+    return norm_py(m.group(1)) if m else "?"
+
+
 def parse_requirements(path, fn, proj):
     dev = bool(re.search(r"dev|test", fn))
     for line in read_text(path).splitlines():
-        m = re.match(r"^([A-Za-z0-9_.\-]+)(?:\[[^\]]*\])?\s*==\s*([^\s;\\#]+)", line.strip())
+        line = line.strip()
+        if INDEX_FLAG.match(line):
+            proj["private_index"] = True  # a custom package index: no PyPI name from this project is provably public
+            continue
+        src = non_registry_name(line)
+        if src:
+            proj["private_py"].append(src)  # direct URL, git or path source: its name may be private
+            continue
+        m = re.match(r"^([A-Za-z0-9_.\-]+)(?:\[[^\]]*\])?\s*==\s*([^\s;\\#]+)", line)
         if m:
             add_pkg(proj, "PyPI", m.group(1).lower(), m.group(2), dev, fn)
+        if not dev:  # shortcut: a fully pinned requirements file lists transitive packages too; all count as direct
+            d = re.match(r"^([A-Za-z0-9][A-Za-z0-9_.\-]*)\s*(?:\[[^\]]*\])?\s*(?:[=<>!~;@]|$)", line)
+            if d and norm_py(d.group(1)) not in proj["private_py"]:
+                proj["direct_pypi"].append(norm_py(d.group(1)))
+
+
+def parse_pyproject(path, proj):
+    """Direct production dependency names and any private-index setting. Without tomllib (Python < 3.11) the
+    text is only searched for index sections and the dependency names are not read."""
+    text = read_text(path)
+    if re.search(r"^\s*\[\[?tool\.(poetry\.source|uv\.index)\]\]?\s*$", text, re.M) \
+            or re.search(r"^\s*(index-url|extra-index-url)\s*=", text, re.M):
+        proj["private_index"] = True
+    if tomllib is None:
+        return
+    try:
+        data = tomllib.loads(text)
+    except ValueError:
+        return
+    deps = (data.get("project") or {}).get("dependencies")
+    for spec in deps if isinstance(deps, list) else []:
+        m = re.match(r"^\s*([A-Za-z0-9][A-Za-z0-9_.\-]*)", str(spec))
+        if m:
+            (proj["private_py"] if non_registry_name(str(spec).strip()) else proj["direct_pypi"]).append(norm_py(m.group(1)))
+    poetry = ((data.get("tool") or {}).get("poetry") or {}).get("dependencies")
+    for name, spec in (poetry.items() if isinstance(poetry, dict) else []):
+        if str(name).lower() != "python":
+            direct = isinstance(spec, dict) and any(k in spec for k in ("git", "path", "url", "source"))
+            (proj["private_py"] if direct else proj["direct_pypi"]).append(norm_py(name))
+    uv_sources = ((data.get("tool") or {}).get("uv") or {}).get("sources")
+    for name in uv_sources if isinstance(uv_sources, dict) else []:
+        proj["private_py"].append(norm_py(name))
+
+
+def registry_is_public(src):
+    """uv.lock `source` / poetry.lock `[package.source]`. No source means PyPI. Otherwise public only with proof: a
+    registry (uv) or legacy index (poetry) URL on pypi.org. git, url, path, directory, file and other registries are not."""
+    if not isinstance(src, dict):
+        return True
+    reg = src.get("registry") if "registry" in src else src.get("url") if src.get("type") == "legacy" else None
+    return bool(isinstance(reg, str) and re.match(r"https://(pypi\.org|files\.pythonhosted\.org)(/|$)", reg))
 
 
 def parse_toml_lock(path, fn, proj):
@@ -292,6 +370,8 @@ def parse_toml_lock(path, fn, proj):
         src = p.get("source")
         if isinstance(src, dict) and ("virtual" in src or "editable" in src):
             continue  # the project itself
+        if p.get("name") and not registry_is_public(src):
+            proj["private_py"].append(norm_py(p["name"]))  # git, url, path or a non-PyPI registry: never sent out
         if p.get("name") and p.get("version"):
             # shortcut: uv.lock does not mark dev packages, so they count as live (errs on the loud side)
             add_pkg(proj, "PyPI", str(p["name"]).lower(), str(p["version"]), p.get("category") == "dev", fn)
@@ -304,6 +384,8 @@ def parse_pipfile_lock(path, label, proj, inv):
     for section, dev in (("default", False), ("develop", True)):
         for name, info in (data.get(section) or {}).items():
             v = str((info or {}).get("version", "")).lstrip("=")
+            if isinstance(info, dict) and any(k in info for k in ("git", "path", "file", "ref", "editable")):
+                proj["private_py"].append(norm_py(name))
             if v:
                 add_pkg(proj, "PyPI", name.lower(), v, dev, "Pipfile.lock")
 
@@ -354,6 +436,11 @@ def handle_file(dirpath, fn, rel, proj, inv):
         parse_pipfile_lock(path, label, proj, inv)
     elif fn == "package.json":
         parse_package_json(path, label, proj, inv)
+    elif fn == "pyproject.toml":
+        parse_pyproject(path, proj)
+    elif fn.startswith(".env"):
+        if INDEX_ENV.search(read_text(path)):  # the variable's name is looked for; its value is never kept
+            proj["private_index"] = True
     elif low in ("wrangler.toml", "wrangler.jsonc", "wrangler.json"):
         m = re.search(r'^\s*name\s*=\s*"([^"]+)"' if low.endswith(".toml") else r'"name"\s*:\s*"([^"]+)"',
                       read_text(path), re.M)
@@ -368,7 +455,8 @@ def handle_file(dirpath, fn, rel, proj, inv):
 
 
 def new_project(rel):
-    return {"path": rel, "lockfiles": [], "packages": [], "deploy": [], "not_parsed": [], "runtimes": [], "direct_npm": [], "private_npm": []}
+    return {"path": rel, "lockfiles": [], "packages": [], "deploy": [], "not_parsed": [], "runtimes": [], "direct_npm": [], "private_npm": [],
+            "direct_pypi": [], "private_py": [], "private_index": False}
 
 
 def venv_python_version(venv_dir):
@@ -404,11 +492,36 @@ def outside_tool(name, root):
     return None
 
 
+def has_lockfile(folder):
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return False
+    return any(n in ("package-lock.json", "pnpm-lock.yaml", "yarn.lock", "poetry.lock", "uv.lock", "Pipfile.lock")
+               or re.fullmatch(r"requirements.*\.txt", n) for n in names)
+
+
+def lockfile_below(folder):
+    """True when this folder or any folder under it holds a lockfile (the walk skips the same folders the scan skips)."""
+    for dirpath, dirnames, _ in os.walk(folder):
+        if has_lockfile(dirpath):
+            return True
+        dirnames[:] = [d for d in dirnames if not d.startswith(".") and d not in SKIP_DIRS]
+    return False
+
+
 def scan_projects(root, inv):
     for dirpath, dirnames, filenames in os.walk(root):
         rel = os.path.relpath(dirpath, root)
         depth = 0 if rel == "." else rel.count(os.sep) + 1
-        dirnames[:] = sorted(d for d in dirnames if not d.startswith(".") and d not in SKIP_DIRS) if depth < MAX_DEPTH else []
+        kept = sorted(d for d in dirnames if not d.startswith(".") and d not in SKIP_DIRS)
+        if depth >= MAX_DEPTH:
+            for d in kept:
+                if lockfile_below(os.path.join(dirpath, d)):
+                    deeper = os.path.join(rel, d) if rel != "." else d
+                    inv["too_deep"].append(deeper.replace(os.sep, "/"))
+            kept = []
+        dirnames[:] = kept
         proj = new_project(rel)
         for fn in sorted(filenames):
             handle_file(dirpath, fn, rel, proj, inv)
@@ -520,7 +633,7 @@ def scan_mcp(root, inv):
 def build_inventory(folder):
     root = os.path.abspath(folder)
     inv = {"generated": today(), "folder": os.path.basename(root), "projects": [], "mcp": [],
-           "runtimes": [], "unreadable": []}
+           "runtimes": [], "unreadable": [], "too_deep": []}
     scan_projects(root, inv)
     scan_mcp(root, inv)
     py_name = "python" if platform_name() == "windows" else "python3"
@@ -547,6 +660,10 @@ def state_dir(folder, *parts):
         if os.path.islink(d):
             raise ValueError("Refusing to write: %s is a symbolic link. Remove it and run again." % d)
         os.makedirs(d, exist_ok=True)
+        if part == STATE_DIR:
+            ignore = os.path.join(d, ".gitignore")  # the state folder ignores itself: the audit never dirties the repo
+            if not os.path.lexists(ignore):
+                write_file(ignore, "*\n")
     return d
 
 
@@ -568,24 +685,6 @@ def write_file(path, text, append=False):
     finally:
         if os.path.exists(tmp):
             os.remove(tmp)
-
-
-def ensure_gitignore(folder):
-    """Add .stack-guard/ to the folder's own .gitignore when the folder is a git repo. Append only.
-    Returns True when a line was added."""
-    root = os.path.abspath(folder)
-    if not os.path.exists(os.path.join(root, ".git")):
-        return False
-    path = os.path.join(root, ".gitignore")
-    text = read_text(path)
-    if any(x.strip().rstrip("/") in (STATE_DIR, "/" + STATE_DIR) for x in text.splitlines()):
-        return False
-    if os.path.islink(path):
-        print("Left .gitignore alone: it is a symbolic link.")
-        return False
-    write_file(path, ("" if not text or text.endswith("\n") else "\n") + STATE_DIR + "/\n", append=True)
-    print("Added %s/ to .gitignore so reports stay out of git." % STATE_DIR)
-    return True
 
 
 INV_WARNING = "> **Warning:** this file may describe your setup; review before committing."
@@ -624,6 +723,7 @@ def render_inventory(inv):
             L.append("- node `%s` wanted by `%s` (package.json engines)" % (p["engines_node"], p["path"]))
     skipped = ["`%s`: %s" % (p["path"], n) for p in inv["projects"] for n in p["not_parsed"]]
     skipped += ["`%s`: could not be read" % u for u in inv["unreadable"]]
+    skipped += ["folder deeper than %d levels: `%s`" % (MAX_DEPTH, d) for d in inv.get("too_deep", [])]
     if skipped:
         L += ["", "## Not parsed or unreadable", ""] + ["- " + s for s in skipped]
     return "\n".join(L) + "\n"
@@ -642,20 +742,26 @@ def _recorded_inventory_hash(folder):
         return ""
 
 
-def write_inventory(folder, inv):
+def write_inventory(folder, inv, state_only=False):
+    """state_only (the check command): the copy goes to .stack-guard/ and nothing else in the folder is touched."""
     root = os.path.abspath(folder)
     text = render_inventory(inv)
     path = os.path.join(root, "STACK-INVENTORY.md")
+    if state_only:
+        path = os.path.join(state_dir(folder), "STACK-INVENTORY.md")
     # Ownership = the file's bytes match the hash we recorded when we wrote it. A first-line check is not
     # proof (anyone can copy the public warning line). shortcut: a file you edited after we wrote it counts
     # as yours and is left alone; the fresh inventory goes to .stack-guard/ instead.
-    if os.path.lexists(path):
+    if not state_only and os.path.lexists(path):
         recorded = _recorded_inventory_hash(folder)
         if not recorded or _sha256(read_text(path)) != recorded:
             path = os.path.join(state_dir(folder), "STACK-INVENTORY.md")
     write_file(path, text)
     rec = dict(inv)
-    rec["written_inventory_sha256"] = _sha256(text) if os.path.dirname(path) == root else ""
+    if state_only:  # keep what the inventory command last recorded, so its ownership test still works
+        rec["written_inventory_sha256"] = _recorded_inventory_hash(folder)
+    else:
+        rec["written_inventory_sha256"] = _sha256(text) if os.path.dirname(path) == root else ""
     write_file(os.path.join(state_dir(folder), "inventory.json"), json.dumps(rec, indent=1))
     return path
 
@@ -718,17 +824,22 @@ def fixed_versions(vuln, eco, name):
 # ---------------------------------------------------------------- checks: OSV and end-of-life
 
 def collect_targets(inv, stats=None):
-    """Packages to look up. Private npm names never leave the machine (not even to OSV); names or versions that
+    """Packages to look up. Private npm and PyPI names never leave the machine (not even to OSV); names or versions that
     fail the grammar are dropped. stats, when given, receives the counts: {"private": n, "invalid": n}."""
     t = []
     private_seen, invalid = set(), 0
     private_all = {n for p in inv["projects"] for n in p["private_npm"]}
+    private_py_all = {n for p in inv["projects"] for n in p.get("private_py", [])}
     proven = lockfile_public_npm(inv)
     for p in inv["projects"]:
         for x in p["packages"]:
             if re.match(r"\d", x["version"]):
                 if x["ecosystem"] == "npm" and x["name"] in private_all:
                     private_seen.add(x["name"])
+                    continue
+                # PyPI: a direct-URL, git or path source, or any package of a project with a private index, may be a private name
+                if x["ecosystem"] == "PyPI" and (p.get("private_index") or norm_py(x["name"]) in private_py_all):
+                    private_seen.add(norm_py(x["name"]))
                     continue
                 if not (valid_name(x["ecosystem"], x["name"]) and valid_version(x["version"])):
                     invalid += 1
@@ -851,6 +962,7 @@ def make_report(inv, findings, errors, osv_ok, skipped=None):
         c = counts.setdefault(f["project"], {k: 0 for k in SEV_ORDER})
         c[f["severity"]] += 1
     unreadable = ["%s could not be read" % u for u in inv["unreadable"]]
+    unreadable += ["folder deeper than %d levels: %s" % (MAX_DEPTH, d) for d in inv.get("too_deep", [])]
     not_parsed = ["%s: %s" % (p["path"], n) for p in inv["projects"] for n in p["not_parsed"]]
     return {"date": today(), "folder": inv["folder"], "osv_ok": osv_ok, "findings": findings or [],
             "runtimes": [r for r in inv["runtimes"] if r["version"]],
@@ -1038,7 +1150,11 @@ def send_webhook(folder, text):
 
 
 def cmd_webhook_set(folder):
+    print("Paste the Discord or Slack webhook URL and press Enter:", end=" ", file=sys.stderr, flush=True)
     url = sys.stdin.readline().strip()  # from stdin only, so it never lands in shell history or the process list
+    if not url:
+        print("Not stored: nothing was entered.")
+        return 1
     if not webhook_kind(url):
         print("Not stored: only https://discord.com/api/webhooks/... , https://discordapp.com/api/webhooks/... "
               "or https://hooks.slack.com/... addresses are accepted.")
@@ -1092,35 +1208,48 @@ def valid_component(line):
     name, version = head[0], head[1]
     if "(" in line and "(npm" in line:
         return valid_name("npm", name) and valid_version(version)
+    if "(PyPI" in line:
+        return valid_name("PyPI", name) and valid_version(version)
     return bool(re.fullmatch(r"[A-Za-z][A-Za-z0-9._-]*", name)) and valid_version(version)
 
 
-def public_components(inv):
-    """Public names and versions only: runtimes, hosts, direct live npm packages from the public registry, MCP packages."""
+def ordered_components(inv):
+    """Public names and versions for the news search, most important first, nothing transitive: runtimes and hosts,
+    then MCP SDKs and servers, then each project's direct production dependencies (npm from the public registry;
+    PyPI only when the project names no private index). Every line passes valid_component. Not capped."""
     out = ["%s %s" % (r["name"], r["version"]) for r in inv["runtimes"] if r["version"]]
     hosts = sorted({h for p in inv["projects"] for d in p["deploy"] for h in ("Cloudflare", "Fly.io", "Vercel", "Netlify", "Render", "Railway", "Docker")
                     if h.lower().split(".")[0] in d.lower()})
     out += ["hosted on " + h for h in hosts]
-    for p in inv["projects"]:
-        direct, private = set(p["direct_npm"]), set(p["private_npm"])
-        for x in p["packages"]:
-            # shortcut: PyPI packages stay out, since lockfiles do not show which index they came from;
-            # add them once the parsers record the source index and can prove a package is public
-            if x["dev"] or x["ecosystem"] != "npm" or x["name"] not in direct or x["name"] in private:
-                continue
-            if not (valid_name("npm", x["name"]) and valid_version(x["version"])):
-                continue  # a name with a space would otherwise be read as name plus version in valid_component
-            out.append("%s %s (%s)" % (x["name"], x["version"], x["ecosystem"]))
     proven = lockfile_public_npm(inv)
     for m in inv["mcp"]:
         k = m["package"]
-        # shortcut: PyPI MCP names stay out for the same reason as PyPI project packages (index not provable)
-        if k and k["ecosystem"] == "npm" and k["name"] in proven:
+        # shortcut: PyPI MCP names stay out (a uvx package has no project to show which index it came from)
+        if k and k["ecosystem"] == "npm" and mcp_news_proof(m, proven):
             out.append("%s %s (npm, MCP server)" % (k["name"], k["version"]))
         elif not k and m["unpinned_package"] and m["unpinned_package"] in npm_mcp_names(inv) and mcp_news_proof(m, proven):
             out.append("%s (npm, MCP server, no fixed version)" % m["unpinned_package"])
-    out = [c for c in out if valid_component(c)]
-    return sorted(set(out))[:60]  # shortcut: first 60 names, so the prompt stays small
+    for p in inv["projects"]:
+        direct, private = set(p["direct_npm"]), set(p["private_npm"])
+        for x in sorted(p["packages"], key=lambda x: x["name"]):
+            if x["dev"]:
+                continue
+            if x["ecosystem"] == "npm":
+                if x["name"] not in direct or x["name"] in private:
+                    continue
+            else:
+                # PyPI names stay on this computer: a private index can be set outside the project
+                # (pip.conf, PIP_INDEX_URL, user-level Poetry config), so "no index in the project" proves nothing.
+                continue
+            if not (valid_name(x["ecosystem"], x["name"]) and valid_version(x["version"])):
+                continue  # a name with a space would otherwise be read as name plus version in valid_component
+            out.append("%s %s (%s)" % (x["name"], x["version"], x["ecosystem"]))
+    return list(OrderedDict((c, 1) for c in out if valid_component(c)))
+
+
+def public_components(inv):
+    """The first NEWS_CAP of ordered_components. shortcut: a fixed cap keeps the prompt small; the report says how many were left out."""
+    return ordered_components(inv)[:NEWS_CAP]
 
 
 def news_prompt(inv):
@@ -1160,6 +1289,11 @@ def run_agents(inv, findings, diff, rep, errors, root=None):
     if not cli:
         rep["agent_notes"].append("Agent step skipped: no claude or codex command was found.")
         return
+    total = len(ordered_components(inv))
+    if total > NEWS_CAP:
+        note = ("%s%d of %d public components (runtimes and MCP servers first, then each project's direct dependencies); "
+                "%d were not searched." % (CAP_NOTE, NEWS_CAP, total, total - NEWS_CAP))
+        rep["agent_notes"].append(note)
     ok, text = run_agent(cli, "news", news_prompt(inv))
     if ok:
         rep["news"] = text
@@ -1182,7 +1316,6 @@ def run_agents(inv, findings, diff, rep, errors, root=None):
 # ---------------------------------------------------------------- commands
 
 def cmd_inventory(folder):
-    ensure_gitignore(folder)
     inv = build_inventory(folder)
     path = write_inventory(folder, inv)
     n, pk, dp, mc = inventory_counts(inv)
@@ -1195,9 +1328,8 @@ def cmd_inventory(folder):
 
 def cmd_check(folder, notify, agents=False):
     print("Stack Guard %s run %s, folder %s" % (VERSION, datetime.datetime.now().strftime("%Y-%m-%d %H:%M"), os.path.abspath(folder)))
-    ensure_gitignore(folder)
     inv = build_inventory(folder)
-    write_inventory(folder, inv)
+    write_inventory(folder, inv, state_only=True)
     errors = []
     skipped = {}
     findings = osv_check(collect_targets(inv, skipped), state_dir(folder, "cache"), errors)
@@ -1209,7 +1341,7 @@ def cmd_check(folder, notify, agents=False):
     diff = diff_reports(prev, rep, problem)
     if agents:
         run_agents(inv, rep["findings"], diff, rep, errors, os.path.abspath(folder))
-        rep["not_checked"] = rep["not_checked"] + [n for n in rep["agent_notes"] if n.startswith("agent step failed")]
+        rep["not_checked"] = rep["not_checked"] + [n for n in rep["agent_notes"] if n.startswith(("agent step failed", CAP_NOTE))]
     write_file(os.path.join(reports, rep["date"] + ".md"), render_report(rep, diff))
     write_file(os.path.join(reports, rep["date"] + ".json"), json.dumps(rep, indent=1))
     sev = [f for f in rep["findings"] if f["severity"] in ("HIGH", "CRITICAL")]
@@ -1291,6 +1423,15 @@ def watch_log_path(folder):
     return config_dir("logs", key + ".log")
 
 
+def folder_hash(folder):
+    """Twelve hex characters naming one folder's schedule, so each folder has its own entry."""
+    return hashlib.sha256(os.path.abspath(folder).encode("utf-8")).hexdigest()[:12]
+
+
+CRON_MARK = "# stack-guard watch "
+TASK_PREFIX = "stack-guard watch "
+
+
 def cmd_quote(arg):
     """Quote one argument for cmd.exe: always inside double quotes, where & | < > ( ) stay plain text.
     Refuse characters that still act inside quotes (percent expands, a quote ends the quoting)."""
@@ -1319,26 +1460,41 @@ def watch_plan(plat, folder, hhmm, agents=True, installing=True):
     argv.append(root)
     log = watch_log_path(root)
     uid = getattr(os, "getuid", lambda: 501)()
-    base = {"folder": root, "log": log}
+    h = folder_hash(root)
+    label = "%s.%s" % (LABEL, h)
+    base = {"folder": root, "log": log, "hash": h}
     if plat == "darwin":
-        path = os.path.join(home_dir(), "Library", "LaunchAgents", LABEL + ".plist")
+        path = os.path.join(home_dir(), "Library", "LaunchAgents", label + ".plist")
         content = plistlib.dumps({
-            "Label": LABEL, "ProgramArguments": argv,
+            "Label": label, "ProgramArguments": argv,
             "StartCalendarInterval": {"Hour": hour, "Minute": minute},
             "StandardOutPath": log, "StandardErrorPath": log,
             "EnvironmentVariables": {"PATH": schedule_path(root)}})
         return dict(base, kind="launchd", file=path, content=content, show="%s:\n%s" % (path, content.decode()),
                     install=[["launchctl", "bootstrap", "gui/%d" % uid, path]],
-                    remove=[["launchctl", "bootout", "gui/%d/%s" % (uid, LABEL)]])
+                    remove=[["launchctl", "bootout", "gui/%d/%s" % (uid, label)]])
     if plat == "windows":
-        inner = "%s >> %s 2>&1" % (" ".join(cmd_quote(a) for a in argv), cmd_quote(log))
-        create = ["schtasks", "/Create", "/SC", "DAILY", "/TN", LABEL, "/TR", 'cmd /c "%s"' % inner,
+        # The scheduled task runs a small .cmd file, so the long command never has to survive nested quoting.
+        cmd_file = config_dir("bin", "watch-%s.cmd" % h)
+        cmd_text = "@echo off\n%s >> %s 2>&1\n" % (" ".join(cmd_quote(a) for a in argv), cmd_quote(log))
+        task = TASK_PREFIX + h
+        create = ["schtasks", "/Create", "/SC", "DAILY", "/TN", task, "/TR", cmd_quote(cmd_file),
                   "/ST", "%02d:%02d" % (hour, minute), "/F"]
-        return dict(base, kind="schtasks", show=subprocess.list2cmdline(create), install=[create],
-                    remove=[["schtasks", "/Delete", "/TN", LABEL, "/F"]])
-    line = "%d %d * * * PATH=%s %s >> %s 2>&1 # %s" % (minute, hour, shlex.quote(schedule_path(root)),
-                                                      " ".join(shlex.quote(a) for a in argv), shlex.quote(log), LABEL)
-    return dict(base, kind="cron", line=line, show="crontab line:\n" + line, install=[], remove=[])
+        return dict(base, kind="schtasks", cmd_file=cmd_file, cmd_text=cmd_text, task=task, install=[create],
+                    show="%s\n%s contains:\n%s" % (subprocess.list2cmdline(create), cmd_file, cmd_text),
+                    remove=[["schtasks", "/Delete", "/TN", task, "/F"]])
+    line = "%d %d * * * PATH=%s %s >> %s 2>&1 %s%s" % (minute, hour, shlex.quote(schedule_path(root)),
+                                                      " ".join(shlex.quote(a) for a in argv), shlex.quote(log), CRON_MARK, h)
+    return dict(base, kind="cron", line=line, marker=CRON_MARK + h, show="crontab line:\n" + line, install=[], remove=[])
+
+
+def launchd_unload(target, root):
+    """launchctl bootout. True when the job is gone: unloaded now, or it was not loaded. Any other failure gives False,
+    so the caller keeps the plist and reports it."""
+    err = []
+    code, _ = run_system_tool(["launchctl", "bootout", target], root, stderr_out=err)
+    said = (err[0] if err else "").lower()
+    return code == 0 or code in (3, 113) or "could not find" in said or "no such process" in said
 
 
 def run_system_tool(cmd, root, **kw):
@@ -1350,9 +1506,16 @@ def run_system_tool(cmd, root, **kw):
     return run_cmd([tool] + list(cmd[1:]), **kw)
 
 
-def edit_crontab(add_line, root):
-    code, current = run_system_tool(["crontab", "-l"], root)
-    lines = [x for x in (current.splitlines() if code == 0 else []) if LABEL not in x]
+def edit_crontab(add_line, root, drop):
+    """Rewrite the crontab without every line that `drop` accepts, then add add_line. An unreadable crontab stops the
+    change with an error: only the answer "no crontab for <user>" counts as empty."""
+    err = []
+    code, current = run_system_tool(["crontab", "-l"], root, stderr_out=err)
+    if code != 0 and "no crontab for" not in (err[0] if err else ""):
+        why = (err[0] if err else "").splitlines()[:1]
+        raise ValueError("Could not read your crontab (crontab -l %s). Nothing was changed."
+                         % ("said: " + why[0] if why else "failed with code %d" % code))
+    lines = [x for x in (current.splitlines() if code == 0 else []) if not drop(x)]
     if add_line:
         lines.append(add_line)
     code, _ = run_system_tool(["crontab", "-"], root, input_text="\n".join(lines) + "\n" if lines else "")
@@ -1369,10 +1532,11 @@ def apply_plan(plan, remove):
         if os.name == "posix":
             os.chmod(log_dir, 0o700)
     if plan["kind"] == "cron":
-        return edit_crontab(None if remove else plan["line"], root)
+        return edit_crontab(None if remove else plan["line"], root, lambda x: x.rstrip().endswith(plan["marker"]))
     if plan["kind"] == "launchd":
         if remove:
-            run_system_tool(plan["remove"][0], root)
+            if not launchd_unload(plan["remove"][0][2], root):
+                return False  # still loaded: keep the plist so the job stays removable
             if os.path.exists(plan["file"]):
                 os.remove(plan["file"])
             return True
@@ -1380,9 +1544,39 @@ def apply_plan(plan, remove):
         with open(plan["file"], "wb") as fh:
             fh.write(plan["content"])
         run_system_tool(["launchctl", "bootout", plan["remove"][0][2]], root)  # ok if it was not loaded yet
+    if plan["kind"] == "schtasks":
+        if not remove:
+            write_file(plan["cmd_file"], plan["cmd_text"])
     for cmd in plan["remove"] if remove else plan["install"]:
         ok = run_system_tool(cmd, root)[0] == 0 and ok
+    if plan["kind"] == "schtasks" and remove and ok and os.path.exists(plan["cmd_file"]):
+        os.remove(plan["cmd_file"])  # the wrapper goes only after the task is gone, so a failed delete leaves both
     return ok
+
+
+def remove_legacy(plat, root):
+    """Remove the v1 schedule (one global entry named LABEL, before schedules got a folder hash), so an upgrade
+    never leaves two daily runs. Returns True when one was found and removed, None when there was none,
+    False when one was found but could not be removed.
+    shortcut: a v1 entry is dropped even if it watched another folder; rerun watch-install there to bring it back."""
+    if plat == "darwin":
+        path = os.path.join(home_dir(), "Library", "LaunchAgents", LABEL + ".plist")
+        if not os.path.exists(path):
+            return None
+        uid = getattr(os, "getuid", lambda: 501)()
+        if not launchd_unload("gui/%d/%s" % (uid, LABEL), root):
+            print("Could not unload the older schedule (%s); its plist stays at %s." % (LABEL, path), file=sys.stderr)
+            return False
+        os.remove(path)
+        return True
+    if plat == "windows":
+        if run_system_tool(["schtasks", "/Query", "/TN", LABEL], root)[0] != 0:
+            return None
+        return run_system_tool(["schtasks", "/Delete", "/TN", LABEL, "/F"], root)[0] == 0
+    code, current = run_system_tool(["crontab", "-l"], root)
+    if code != 0 or not any(x.rstrip().endswith("# " + LABEL) for x in current.splitlines()):
+        return None
+    return edit_crontab(None, root, lambda x: x.rstrip().endswith("# " + LABEL))
 
 
 def cmd_watch_install(folder, hhmm, yes, agents=True):
@@ -1400,17 +1594,71 @@ def cmd_watch_install(folder, hhmm, yes, agents=True):
     if not yes:
         print("Nothing installed. Add --yes to install it.")
         return 0
-    ensure_gitignore(folder)
     ok = apply_plan(plan, False)
     print("Script copy refreshed at %s. Run watch-install --yes again after an update to bring it to the schedule." % stable_script_path())
     print("Each run is logged to %s" % plan["log"])
+    legacy = remove_legacy(platform_name(), os.path.abspath(folder)) if ok else None
+    if legacy:
+        print("Removed the older single schedule (%s) so the check runs once a day." % LABEL)
+    elif legacy is False:
+        print("Installed, BUT the older schedule (%s) could not be removed, so the check may run twice a day. "
+              "Remove it by hand: stack_guard.py watch-remove --all" % LABEL, file=sys.stderr)
+        return 1
     print("Installed." if ok else "Install failed: run the lines above by hand.")
     return 0 if ok else 1
 
 
-def cmd_watch_remove(folder="."):
-    ok = apply_plan(watch_plan(platform_name(), folder, "08:00", installing=False), True)
-    print("Removed." if ok else "Remove failed: delete the %s entry by hand." % LABEL)
+def stack_guard_entries(plat, root):
+    """Every stack-guard schedule on this computer, as (description, remove-it function)."""
+    found = []
+    if plat == "darwin":
+        agents = os.path.join(home_dir(), "Library", "LaunchAgents")
+        uid = getattr(os, "getuid", lambda: 501)()
+        for fn in sorted(os.listdir(agents)) if os.path.isdir(agents) else []:
+            m = re.fullmatch(r"(%s(?:\.[0-9a-f]{12})?)\.plist" % re.escape(LABEL), fn)
+            if m:
+                def drop(label=m.group(1), path=os.path.join(agents, fn)):
+                    if not launchd_unload("gui/%d/%s" % (uid, label), root):
+                        return False
+                    os.remove(path)
+                    return True
+                found.append((m.group(1), drop))
+    elif plat == "windows":
+        code, out = run_system_tool(["schtasks", "/Query", "/FO", "CSV", "/NH"], root)
+        for m in re.finditer(r'^"\\?(%s[0-9a-f]{12}|%s)"' % (re.escape(TASK_PREFIX), re.escape(LABEL)), out if code == 0 else "", re.M):
+            h = m.group(1)[len(TASK_PREFIX):] if m.group(1).startswith(TASK_PREFIX) else None  # None = the v1 task
+            def drop(task=m.group(1), h=h):
+                cmd_file = config_dir("bin", "watch-%s.cmd" % h) if h else None
+                ok = run_system_tool(["schtasks", "/Delete", "/TN", task, "/F"], root)[0] == 0
+                if ok and cmd_file and os.path.exists(cmd_file):
+                    os.remove(cmd_file)
+                return ok
+            found.append((m.group(1), drop))
+    else:
+        err = []
+        code, current = run_system_tool(["crontab", "-l"], root, stderr_out=err)
+        if code != 0 and "no crontab for" not in (err[0] if err else ""):
+            raise ValueError("Could not read your crontab. Nothing was changed.")
+        marks = [x for x in current.splitlines() if CRON_MARK in x or x.rstrip().endswith("# " + LABEL)] if code == 0 else []
+        if marks:
+            found.append(("%d crontab line(s)" % len(marks),
+                          lambda: edit_crontab(None, root, lambda x: CRON_MARK in x or x.rstrip().endswith("# " + LABEL))))
+    return found
+
+
+def cmd_watch_remove(folder=".", all_entries=False):
+    root = os.path.abspath(folder)
+    if all_entries:
+        entries = stack_guard_entries(platform_name(), root)
+        for name, _ in entries:
+            print("Found: %s" % name)
+        ok = all([drop() for _, drop in entries])
+        print(("Removed %d stack-guard schedule(s)." % len(entries)) if ok else "Remove failed for at least one entry: delete it by hand.")
+        if not entries:
+            print("No stack-guard schedule was found.")
+    else:
+        ok = apply_plan(watch_plan(platform_name(), folder, DEFAULT_TIME, installing=False), True)
+        print("Removed." if ok else "Remove failed: delete the stack-guard entry for this folder by hand.")
     print("The script copy stays at %s (delete it by hand if you want it gone)." % stable_script_path())
     return 0 if ok else 1
 
@@ -1428,10 +1676,12 @@ def main(argv=None):
         sub.add_parser(name).add_argument("folder", nargs="?", default=".")
     w = sub.add_parser("watch-install")
     w.add_argument("folder", nargs="?", default=".")
-    w.add_argument("--time", default="08:00")
+    w.add_argument("--time", default=DEFAULT_TIME)
     w.add_argument("--yes", action="store_true")
     w.add_argument("--no-agents", action="store_true", help="schedule the script's own checks only")
-    sub.add_parser("watch-remove").add_argument("folder", nargs="?", default=".")
+    r = sub.add_parser("watch-remove")
+    r.add_argument("folder", nargs="?", default=".")
+    r.add_argument("--all", action="store_true", help="remove every stack-guard schedule on this computer")
     a = ap.parse_args(argv)
     if a.cmd in ("inventory", "check", "watch-install", "webhook-set", "webhook-remove") and not os.path.isdir(a.folder):
         print("Folder not found: %s" % a.folder)
@@ -1447,7 +1697,7 @@ def main(argv=None):
             return cmd_webhook_remove(a.folder)
         if a.cmd == "watch-install":
             return cmd_watch_install(a.folder, a.time, a.yes, not a.no_agents)
-        return cmd_watch_remove(a.folder)
+        return cmd_watch_remove(a.folder, a.all)
     except ValueError as e:
         print(str(e))
         return 1
