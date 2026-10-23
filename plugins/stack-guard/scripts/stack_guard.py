@@ -42,26 +42,26 @@ try:  # Python 3.11+
 except ImportError:  # shortcut: older Pythons list poetry.lock / uv.lock as "not parsed"
     tomllib = None
 
-LABEL = "dev.stack-guard.watch"
-VERSION = "1.2.0"
-STATE_DIR = ".stack-guard"
-MAX_DEPTH = 6
-NEWS_CAP = 80
-DEFAULT_TIME = "09:00"
-CAP_NOTE = "News search covered "
-SKIP_DIRS = {"node_modules", "venv", "dist", "build", "worktrees", "__pycache__"}  # dot-folders are skipped too
-SEV_ORDER = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1, "UNKNOWN": 0}
-OSV_BATCH = "https://api.osv.dev/v1/querybatch"
-OSV_VULN = "https://api.osv.dev/v1/vulns/"
-EOL_URL = "https://endoflife.date/api/%s.json"
-EOL_PRODUCTS = {"node": "nodejs", "python": "python"}
-CACHE_DAYS = 7
 TIMEOUT = 30
-AGENT_TIMEOUT = 300
-AGENT_DENY = "Bash,Edit,Write,Read,Glob,Grep,Agent,Skill,NotebookEdit"
-SECRET_WORD = re.compile(r"token|key|secret|password|auth", re.I)
-REDACTED = "<redacted>"
+OSV_VULN = "https://api.osv.dev/v1/vulns/"
 BASE_PATH = ["/usr/bin", "/bin", "/usr/sbin", "/sbin"]
+CAP_NOTE = "News search covered "
+SEV_ORDER = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1, "UNKNOWN": 0}
+REDACTED = "<redacted>"
+STATE_DIR = ".stack-guard"
+CACHE_DAYS = 7
+EOL_PRODUCTS = {"node": "nodejs", "python": "python"}
+AGENT_TIMEOUT = 300
+DEFAULT_TIME = "09:00"
+LABEL = "dev.stack-guard.watch"
+SECRET_WORD = re.compile(r"token|key|secret|password|auth", re.I)
+OSV_BATCH = "https://api.osv.dev/v1/querybatch"
+VERSION = "1.2.0"
+EOL_URL = "https://endoflife.date/api/%s.json"
+SKIP_DIRS = {"node_modules", "venv", "dist", "build", "worktrees", "__pycache__"}  # dot-folders are skipped too
+AGENT_DENY = "Bash,Edit,Write,Read,Glob,Grep,Agent,Skill,NotebookEdit"
+NEWS_CAP = 80
+MAX_DEPTH = 6
 
 
 # ---------------------------------------------------------------- seams (tests replace these)
@@ -179,9 +179,9 @@ def first_version(text):
     return m.group(1) if m else None
 
 
+VERSION_RE = re.compile(r"^[0-9A-Za-z.+_!-]{1,64}$")
 NPM_NAME_RE = re.compile(r"^(@[a-z0-9-~][a-z0-9-._~]*/)?[a-z0-9-~][a-z0-9-._~]*$")
 PYPI_NAME_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$")
-VERSION_RE = re.compile(r"^[0-9A-Za-z.+_!-]{1,64}$")
 
 
 def valid_name(eco, name):

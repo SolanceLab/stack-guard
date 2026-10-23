@@ -1,5 +1,3 @@
-> ⚠️ **Please hold the install for now (23 Oct).** Version 1.2.0 adds the inventory script and the daily watch that should have been in the first release. This notice comes off when 1.2.0 is out and tested.
-
 # stack-guard
 
 **One prompt to check everything you build and run with Claude Code or Codex for known security holes, and fix the safe ones.**

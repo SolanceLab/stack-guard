@@ -16,9 +16,9 @@ sys.path.insert(0, os.path.join(HERE, "..", "plugins", "stack-guard", "scripts")
 import stack_guard as sg  # noqa: E402
 
 REAL_NOTIFY = sg.notify_desktop  # Base replaces sg.notify_desktop with a Mock
+VULNS = {"lodash": ["GHSA-aaaa-bbbb-cccc"], "requests": ["GHSA-dddd-eeee-ffff"]}
 FIX = os.path.join(HERE, "fixtures")
 SECRET = "SECRET-VALUE-123"
-VULNS = {"lodash": ["GHSA-aaaa-bbbb-cccc"], "requests": ["GHSA-dddd-eeee-ffff"]}
 
 
 def fixture(name):
