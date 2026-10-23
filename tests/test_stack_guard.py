@@ -51,7 +51,7 @@ class FakeNet:
         raise AssertionError("unexpected url " + url)
 
 
-def fake_run(args, input_text=None, timeout=30, cwd=None):
+def fake_run(args, input_text=None, timeout=30, cwd=None, stderr_out=None, env=None):
     exe = os.path.basename(str(args[0]))
     if exe == "node":
         return 0, "v18.20.1"

@@ -7,7 +7,7 @@ argument-hint: '[folder, default: this folder] [--time HH:MM, default 09:00] [--
 
 You are setting up the user's daily stack-guard watch. Arguments: $ARGUMENTS
 
-The daily routine is the plugin's script, run by the computer's own scheduler. Each morning it lists everything, checks every package and runtime against OSV.dev and endoflife.date, then (unless `--no-agents`) hands public package names and versions to two locked-down agents using the user's own Claude Code or Codex: a **news scout** (web tools only) and an **explainer** (no tools). It saves a report, compares it with yesterday, and notifies the user only of what is new. It never fixes anything; fixing stays a conversation with `/stack-guard`.
+The daily routine is the plugin's script, run by the computer's own scheduler. Each morning it lists everything, checks every package and runtime against OSV.dev and endoflife.date, then (unless `--no-agents`) hands public package names and versions to two locked-down agents using the user's own Claude Code or Codex: a **news scout** (web tools only) and an **explainer** (no tools). It saves a report, compares it with yesterday, and notifies the user only of what is new. It never fixes anything; fixing stays a conversation with `/stack-guard`. No agent runs the "Was I hit?" breach checks unattended; when the day has new high or critical live findings, the daily report adds one line, "Run /stack-guard to check whether these were used against you."
 
 Script path: `"${CLAUDE_PLUGIN_ROOT}/scripts/stack_guard.py"`. Folder: the named one, else the current folder.
 

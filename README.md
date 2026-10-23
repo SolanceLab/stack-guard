@@ -78,12 +78,30 @@ Best practice for **any** plugin, this one included, even from people you trust:
 2. **Checks every package and MCP server**, without downloading new tools. It flags MCP servers that fetch themselves fresh on every start (`npx -y some-server` with no version), the easiest way in for a hijacked release. Packages are checked with `npm audit` / `pnpm` / `yarn` for JavaScript, and the free [OSV.dev](https://osv.dev) database for Python, Go, Rust, Ruby and PHP. Production packages are kept apart from build-only tools.
 3. **Checks runtimes.** Node and Python versions against [endoflife.date](https://endoflife.date): unsupported, or a security update available.
 4. **Reads the news.** A scout agent searches the last 14 days of security news for the parts of your stack, confirms each story on the project's own advisory, and tells you whether it affects your versions.
-5. **Reports** what is internet-facing first, then what only runs on your computer, then what is clean.
-6. **Fixes, after your yes.** One fixer agent per project: same-major package upgrades with install scripts switched off (never `--force`), then it proves the project still passes its tests, builds, and works (website pages render, MCP servers still list their tools and refuse strangers). Anything that breaks is put back. A major-version jump comes back to you as a question.
+5. **Checks whether it was used against you.** For each serious hole in something you deploy, a read-only breach checker asks whether the hole was reachable in your setup, how long it was open, whether logs exist for that window, and whether known traces are on this computer. See "Was I hit?" below.
+6. **Finds secrets committed to git.** It looks in the usual secret files (`.mcp.json`, `.env`, keys, `.npmrc`, `.pypirc`) that git tracks, and in older commits, and names the key to rotate. It never prints a value.
+7. **Checks the tools on your computer.** `uv`, `pip`, `pipx`, `poetry`, `npm`, `pnpm`, `yarn`, plus the `certifi` copy inside each uv tool environment, are looked up like any package. `bun` and `deno` have no advisory feed and are listed under "Not checked".
+8. **Reports** what is internet-facing first, then what only runs on your computer, then what is clean.
+9. **Fixes, after your yes.** One fixer agent per project: same-major package upgrades with install scripts switched off (never `--force`), then it proves the project still passes its tests, builds, and works (website pages render, MCP servers still list their tools and refuse strangers). It also serves the project the way it is deployed (a Worker with `wrangler dev`, a Docker or Fly app from its image), because tests and a plain build can pass while the deployed runtime fails. Anything that breaks is put back. A major-version jump comes back to you as a question.
 
 **It never deploys, pushes, commits, upgrades Node/Python, or restarts services on its own.** It hands you the exact command and waits for your yes. Projects with unsaved changes are left alone.
 
 **Good to know:** fixing runs your project's own tests and build, which run your project's code. That is normal for your own projects; for a repo you cloned from someone else, stack-guard asks first.
+
+## Was I hit?
+
+Fixing a hole does not tell you whether someone used it before you fixed it. After the audit, on every run (`--audit-only` too, since it changes nothing), stack-guard asks, for each high or critical finding in a project that has a deploy config and for each supply-chain story in the news:
+
+1. **Reachable?** It reads the advisory and writes down what an attacker needs (a feature, a route, a version range), then searches your project for it. Not reachable means the precondition is absent, and it says where it looked.
+2. **Window.** From the advisory's date to the day the fix was installed (from the lockfile's git history), or to today.
+3. **Traffic.** Whether logs exist for that window, and where to look: Cloudflare Workers Logs, `fly logs`, `vercel logs`, the Supabase logs explorer. It reports counts and request paths, never log contents that hold personal data.
+4. **Traces.** When the advisory lists indicators (file names, paths, processes, domains), it checks this computer and the project for them, read-only.
+
+Each finding ends in one verdict: `not reachable`, `reachable, no signs found`, `reachable, cannot tell (no logs)` or `signs found`. For the last two on a hole that runs code or reads files, it names the secrets the app can reach (names only) and tells you to rotate them.
+
+**What it cannot prove.** Without logs it cannot tell: "no signs found" means nothing it could check showed abuse, not that none happened. A host keeps no history unless you turned it on. For a Cloudflare Worker, add `[observability] enabled = true` to `wrangler.toml` (or `"observability": {"enabled": true}` in `wrangler.jsonc`) and deploy; Workers Logs then keep requests for the next time. Fly keeps only recent minutes with `fly logs`; ship them to a log service if you want history.
+
+The daily watch does not run these checks (no agent works unattended). It adds one line to its report when there are new high or critical live findings: "Run /stack-guard to check whether these were used against you."
 
 ## Secret guard
 
@@ -101,7 +119,7 @@ It is a seatbelt, not a vault: it catches the common ways a secret gets printed,
 
 **Claude Code only;** in Codex, the written secrets rule in every stack-guard instruction applies.
 
-Prompted by a report from [@ayakohi](https://github.com/ayakohi).
+Thanks to Aya ([@ayakohi](https://github.com/ayakohi)), whose question started it.
 
 ## What leaves your computer
 
@@ -110,13 +128,15 @@ Prompted by a report from [@ayakohi](https://github.com/ayakohi).
 - Once a day, one request to raw.githubusercontent.com for this plugin's version number, to tell you when a newer stack-guard is out: at the start of a Claude Code session (one line in your terminal), in `/stack-guard`, and in the daily watch. Nothing about you or your projects is sent. Turn the session-start check off with the environment variable `PLUGIN_UPDATE_CHECK=0`.
 - Daily watch agents (when on): public package and runtime names and versions go to your own Claude Code or Codex account, and the news scout runs web searches with those generic names. The news scout agent is web-only and the explainer agent is tool-less (no file access, no shell) in both Claude and Codex. Turn them off with `--no-agents`.
 - Webhook (only if you set one): a short summary of new findings (package names, versions, severities, counts) to the Discord or Slack channel you chose.
+- "Was I hit?": the breach checker fetches advisory pages (public URLs only). It sends no project data to them.
+- Secrets committed to git are local facts: they are never sent to OSV, and a webhook says only "N secret file(s) committed to git", with no file names.
 - When a host CLI (wrangler, fly) is installed and logged in, the conversation may use it, and it talks to your own account on that host, as it always does.
 
 Your source code, keys, `.env` files and file paths are not sent anywhere, and stack-guard keeps tokens out of its reports.
 
 ## Not covered yet
 
-Container image scanning, GitHub Actions pinning, package signatures/provenance, secret scanning, and Maven/Gradle/NuGet without lockfiles. macOS and Linux are fully supported; Windows works on a best-effort basis and the report lists what it skipped. On Windows the daily watch writes the report and sends the webhook; it shows no desktop pop-up.
+Container image scanning, GitHub Actions pinning, package signatures/provenance, full secret scanning of every file and of git history contents (it checks the usual secret files: .mcp.json, .env, keys, .npmrc), traffic analysis beyond what your host's own logs hold, and Maven/Gradle/NuGet without lockfiles. macOS and Linux are fully supported; Windows works on a best-effort basis and the report lists what it skipped. On Windows the daily watch writes the report and sends the webhook; it shows no desktop pop-up.
 
 ## Needs
 
@@ -132,7 +152,7 @@ Spotted a gap? A stack it misses, a check that's wrong, a fix that went sideways
 
 ## Thanks
 
-Thanks to Aya ([@ayakohi](https://github.com/ayakohi)) for spotting that an AI agent could print a secret into the chat while working. That report is why stack-guard has its secret guard.
+Thanks to Aya ([@ayakohi](https://github.com/ayakohi)), whose question started the secret guard, and to Cygnus, who read the whole plugin, caught that agents loaded the user's own instruction files, and wrote the named-secret redaction.
 
 ## License
 

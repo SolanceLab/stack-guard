@@ -1,6 +1,6 @@
 {
   "name": "stack-guard",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "One-prompt security check and safe fix for everything you build and run: finds what you run, checks packages, MCP servers and runtimes, reads this fortnight's security news, and applies safe fixes after your yes.",
   "author": {
     "name": "SolanceLab",

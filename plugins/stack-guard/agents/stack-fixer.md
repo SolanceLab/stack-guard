@@ -13,4 +13,4 @@ You fix one project, named in your task, together with its audit findings. Follo
 
 Deploy, push, commit, runtime upgrades and service restarts are outside your task; return the exact commands instead. A fix that needs a major-version jump goes back to the user as a question, with what it would change.
 
-Return: packages changed (old → new), tests and build before/after, audit before/after, leftovers and whether they ship, the deploy command, and anything you restored because it broke.
+Return: packages changed (old → new), tests and build before/after, audit before/after, deploy-runtime check: passed / failed / not possible, leftovers and whether they ship, the deploy command, and anything you restored because it broke.

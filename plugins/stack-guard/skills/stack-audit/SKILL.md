@@ -11,6 +11,8 @@ Goal: an honest list of what the user runs, what is vulnerable, and how exposed 
 
 **Safe-tool rule for this skill:** use only tools already on the computer (`npm`, `pnpm`, `yarn`, `python`, `pip`, `git`, `curl`) and plain HTTPS requests to public databases. Use `npx`, `uvx`, `pipx run`, or any install only with an exact pinned version named below, and only when the step says so. Use a host CLI (`wrangler`, `fly`, `vercel`) only when it is already installed in the project (`node_modules/.bin/`) or on the PATH; never fetch one to run it.
 
+The script's report has a section "Secrets committed to git": read it first. The script already opened those files and named the keys; never open a file yourself to confirm (the secrets rule). It also lists "Tools on this computer" (uv, pip, npm and so on) with their advisories.
+
 ## 1. Find what exists (in the scope stack-guard gave you)
 
 A project is a folder holding `package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `bun.lock`/`bun.lockb`, `requirements*.txt`, `pyproject.toml` with `poetry.lock` or `uv.lock`, `Pipfile.lock`, `go.mod`/`go.sum`, `Cargo.lock`, `Gemfile.lock`, or `composer.lock`. Skip `node_modules`, `.venv`, `venv`, `dist`, `build`, `.git`, and worktree copies. A nested folder with its own lockfile (`dashboard/`, `worker/`, `api/`) is its own project; a monorepo with one root lockfile is one project.
@@ -63,6 +65,12 @@ Checked: <N> projects · <N> live (confirmed) · <N> deploy configs · <N> packa
 
 🔴 Fix now (internet-facing)
 - <project> (<live confirmed | deploy config found>): <N> critical / <N> high in production packages. Worst: <package> <version> → fixed in <version> (<same major | major jump>). <one plain sentence on what the hole allows>.
+
+Secrets committed to git
+- <file> (file in git since <id>, <date>) holds a value under <KEY NAME>. Rotate it first, then stop tracking the file.
+
+🔎 Was I hit? (see the stack-breach-check skill)
+- <project> · <advisory> · <verdict>
 
 📰 In the news (last 14 days)
 - <component>: <one sentence>. You run <version> → <affects you, fixed in X | already safe>. Source: <url>

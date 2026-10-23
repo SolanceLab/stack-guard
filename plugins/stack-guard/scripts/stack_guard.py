@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import fnmatch
+import glob
 import hashlib
 import json
 import math
@@ -61,7 +63,7 @@ DEFAULT_TIME = "09:00"
 LABEL = "dev.stack-guard.watch"
 SECRET_WORD = re.compile(r"token|key|secret|password|auth", re.I)
 OSV_BATCH = "https://api.osv.dev/v1/querybatch"
-VERSION = "1.4.0"
+VERSION = "1.5.0"
 EOL_URL = "https://endoflife.date/api/%s.json"
 SKIP_DIRS = {"node_modules", "venv", "dist", "build", "worktrees", "__pycache__"}  # dot-folders are skipped too
 LATEST_URL = "https://raw.githubusercontent.com/SolanceLab/stack-guard/main/.claude-plugin/marketplace.json"
@@ -93,7 +95,7 @@ def run_cmd(args, input_text=None, timeout=30, cwd=None, stderr_out=None, env=No
     """Run a fixed command (list args, never a shell). Returns (exit code, stdout); 127 if missing.
     stderr_out, when it is a list, receives the command's stderr text as its one item."""
     try:
-        p = subprocess.run(args, input=input_text, capture_output=True, text=True, timeout=timeout, cwd=cwd, env=env)
+        p = subprocess.run(args, input=input_text, capture_output=True, text=True, errors="replace", timeout=timeout, cwd=cwd, env=env)  # a binary blob (eg. a DER key) must not abort the check
         if stderr_out is not None:
             stderr_out.append((p.stderr or "").strip())
         return p.returncode, (p.stdout or "").strip()
@@ -702,14 +704,326 @@ def scan_mcp(root, inv):
                     collect_mcp(pdata.get("mcpServers"), "%s (project %s)" % (label, os.path.basename(str(pdir))), inv)
 
 
+# ---------------------------------------------------------------- standalone tools (uv, pip, npm ...)
+
+TOOL_NAMES = ("uv", "pip3", "pip", "pipx", "poetry", "npm", "pnpm", "yarn", "bun", "deno")
+TOOL_FEEDS = {"uv": ("PyPI", "uv"), "pip3": ("PyPI", "pip"), "pip": ("PyPI", "pip"), "pipx": ("PyPI", "pipx"),
+              "poetry": ("PyPI", "poetry"), "npm": ("npm", "npm"), "pnpm": ("npm", "pnpm"), "yarn": ("npm", "yarn")}
+DIST_INFO = re.compile(r"^(certifi|pip)-(\d[^-]*)\.dist-info$", re.I)  # read from each uv tool environment; only certifi is looked up
+
+
+def tool_feed(t):
+    """(ecosystem, package name) to look the tool up under, or None when no advisory feed covers it.
+    Yarn 2 and newer (Berry) is not the npm package `yarn`, so only yarn 1 is looked up."""
+    feed = TOOL_FEEDS.get(t["name"])
+    if not feed or not t["version"]:
+        return None
+    if t["name"] == "yarn" and vkey(t["version"])[:1] != (1,):
+        return None
+    return feed
+
+
+def scan_tools(root, inv):
+    home = home_dir()
+    seen = set()
+    for name in TOOL_NAMES:
+        exe = outside_tool(name, root)
+        if not exe:
+            continue
+        code, out = run_cmd([exe, "--version"], timeout=5)
+        version = first_version(out) if code == 0 else None
+        feed = TOOL_FEEDS.get(name)
+        if feed and feed[1] == "pip" and version:
+            if ("pip", version) in seen:
+                continue  # pip3 and pip are usually one tool
+            seen.add(("pip", version))
+        shown = ("~" + exe[len(home):]) if home and exe.startswith(home.rstrip(os.sep) + os.sep) else exe
+        inv["tools"].append({"name": name, "version": version, "path": shown})
+    uv = outside_tool("uv", root)
+    if not uv:
+        return
+    code, out = run_cmd([uv, "tool", "dir"], timeout=5)
+    if code != 0 or not out or not os.path.isdir(out):
+        return
+    try:
+        envs = sorted(os.listdir(out))
+    except OSError:
+        return
+    for env in envs:
+        d = os.path.join(out, env)
+        if os.path.islink(d) or not os.path.isdir(d):
+            continue
+        found = {}
+        sites = glob.glob(os.path.join(d, "lib", "python*", "site-packages")) + [os.path.join(d, "Lib", "site-packages")]
+        for sp in sites:
+            try:
+                names = os.listdir(sp)
+            except OSError:
+                continue
+            for n in names:
+                m = DIST_INFO.match(n)
+                if m:
+                    found[m.group(1).lower()] = m.group(2)
+        if found:
+            inv["tool_envs"].append({"tool": env, "certifi": found.get("certifi"), "pip": found.get("pip")})
+
+
+def tool_targets(inv):
+    t = []
+    for x in inv.get("tools", []):
+        feed = tool_feed(x)
+        if feed and valid_name(feed[0], feed[1]) and valid_version(x["version"]):
+            t.append({"ecosystem": feed[0], "name": feed[1], "version": x["version"], "project": "tool: %s" % x["name"],
+                      "dev": False, "deploy": False, "tool": True})
+    for e in inv.get("tool_envs", []):
+        if e.get("certifi") and valid_version(e["certifi"]):
+            t.append({"ecosystem": "PyPI", "name": "certifi", "version": e["certifi"], "project": "uv tool environment: %s" % e["tool"],
+                      "dev": False, "deploy": False, "tool": True})
+    return list({(x["ecosystem"], x["name"], x["version"], x["project"]): x for x in t}.values())
+
+
+def tool_skip_notes(inv):
+    """Names only. A tool found but not looked up is said out loud, never silently dropped."""
+    out = []
+    nofeed = sorted({x["name"] for x in inv.get("tools", []) if x["name"] not in TOOL_FEEDS})
+    if nofeed:
+        out.append("Tools with no advisory feed (not checked): %s" % ", ".join(nofeed))
+    unreadable = sorted({x["name"] for x in inv.get("tools", []) if x["name"] in TOOL_FEEDS and not x["version"]})
+    if unreadable:
+        out.append("Tools whose version could not be read (not checked): %s" % ", ".join(unreadable))
+    for x in inv.get("tools", []):
+        if x["name"] == "yarn" and x["version"] and not tool_feed(x):
+            out.append("yarn %s (Berry) is not the npm package yarn (not checked)" % x["version"])
+    return out
+
+
+# ---------------------------------------------------------------- committed secrets
+
+GIT_SAFE = ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=" + os.devnull]  # a cloned repo's config must not run code
+HISTORY_TIMEOUT = 20
+MAX_SECRET_FILE = 1024 * 1024
+ENV_EXAMPLES = {".env.example", ".env.sample", ".env.template"}
+HISTORY_REVS_MAX = 200
+TEST_SEGMENTS = {"test", "tests", "fixtures", "__fixtures__"}
+SECRET_FILE_PATTERNS = (".mcp.json", "claude_desktop_config.json", ".claude.json", ".env", ".env.*", ".dev.vars", "*.pem", "*.key",
+                        "id_rsa*", "credentials*.json", "secrets.yaml", "secrets.yml", ".npmrc", ".pypirc")
+HISTORY_PATHS_MAX = 200
+PLACEHOLDER_FORMS = re.compile(r"(?:<[^<>]*>|your[-_ ][\w\- ]*(?:here|key|token|secret|value|password)|change[-_]?me|replace[-_]?(?:me|this)|"
+                               r"x{3,}|\*{3,}|\.{3}|example|placeholder|todo|none|null)", re.I)  # whole-value forms only: a substring match hides real keys
+
+
+def secret_file_name(path):
+    """True for a path that is one of the usual secret files and not a test canary or an example file."""
+    parts = path.replace("\\", "/").split("/")
+    if any(seg.lower() in TEST_SEGMENTS for seg in parts[:-1]):
+        return False
+    base = parts[-1].lower()
+    if base in ENV_EXAMPLES:
+        return False
+    return any(fnmatch.fnmatch(base, pat) for pat in SECRET_FILE_PATTERNS)
+
+
+def is_placeholder(v):
+    v = str(v).strip().strip("'\"").strip()
+    if not v:
+        return True
+    return v.startswith("$") or bool(PLACEHOLDER_FORMS.fullmatch(v))
+
+
+def safe_name(k):
+    k = str(k)
+    return k if re.fullmatch(r"[A-Za-z0-9_.\-]{1,60}", k) else "(unnamed key)"
+
+
+def json_secret_names(node, in_env=False, out=None):
+    """Names (never values) of keys holding a literal under env/headers or under a secret-looking key."""
+    out = [] if out is None else out
+    if isinstance(node, dict):
+        for k, v in node.items():
+            if isinstance(v, str):
+                bare_url = bool(re.match(r"https?://[^@/\s]*(/|$)", v.strip())) and not in_env
+                if (in_env or SECRET_WORD.search(str(k))) and not is_placeholder(v) and not bare_url:
+                    out.append(safe_name(k))
+            else:
+                json_secret_names(v, in_env or str(k).lower() in ("env", "headers"), out)
+    elif isinstance(node, list):
+        for v in node:
+            json_secret_names(v, in_env, out)
+    return out
+
+
+def literal_secret_names(base, text):
+    """(names, parsed_ok). Which keys in this file hold a literal secret. Names only."""
+    low = base.lower()
+    if low.endswith(".json"):
+        try:
+            return sorted(set(json_secret_names(json.loads(text)))), True
+        except ValueError:
+            return [], False
+    if low in ("secrets.yaml", "secrets.yml"):
+        names = [safe_name(m.group(1)) for m in re.finditer(r"^\s*([^\s#:][^:]*?)\s*:\s*(\S.*)$", text, re.M) if not is_placeholder(m.group(2))]
+        return sorted(set(names)), True
+    if low == ".npmrc":
+        return (["_authToken"] if any(not is_placeholder(m.group(1)) for m in re.finditer(r"_authToken\s*=\s*(.*)", text)) else []), True
+    if low == ".pypirc":
+        return (["password"] if any(not is_placeholder(m.group(1)) for m in re.finditer(r"^\s*password\s*[=:]\s*(.*)$", text, re.M | re.I)) else []), True
+    if low.endswith((".pem", ".key")) or low.startswith("id_rsa"):
+        return (["private key"] if "PRIVATE KEY" in text else []), True
+    names = []  # .env, .env.*, .dev.vars
+    for line in text.splitlines():
+        m = re.match(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_.\-]*)\s*=\s*(.*)$", line)
+        if m and not is_placeholder(m.group(2)):
+            names.append(safe_name(m.group(1)))
+    return sorted(set(names)), True
+
+
+def git_run(git, d, args, timeout=30, stderr_out=None):
+    return run_cmd([git] + GIT_SAFE + ["-C", d] + args, timeout=timeout, stderr_out=stderr_out)
+
+
+def first_commit(git, d, path):
+    """['abbrev-id', 'date'] of the commit that added the path (the last line of the log), or ['']."""
+    code, out = git_run(git, d, ["log", "--all", "--diff-filter=A", "--format=%h %as", "--", path], timeout=20)
+    lines = out.splitlines() if code == 0 else []
+    return lines[-1].strip().split(" ") if lines else [""]
+
+
+def past_secret(git, d, rel):
+    """(found, skipped): found is (names, commit, date) of the oldest checked committed blob of this path that held a literal secret, or None;
+    skipped counts the oldest revisions beyond HISTORY_REVS_MAX that were not opened (None when the history could not be listed). Reads blobs, never the working tree."""
+    code, out = git_run(git, d, ["log", "--all", "--format=%h", "--", rel], timeout=HISTORY_TIMEOUT)
+    if code != 0:
+        return None, None
+    revs = out.split()
+    skipped = max(0, len(revs) - HISTORY_REVS_MAX)
+    for c in reversed(revs[:HISTORY_REVS_MAX]):
+        code, blob = git_run(git, d, ["show", "%s:./%s" % (c, rel)], timeout=HISTORY_TIMEOUT)
+        if code != 0:
+            continue
+        names, ok = literal_secret_names(os.path.basename(rel), blob)
+        if ok and names:
+            _, date = git_run(git, d, ["log", "-1", "--format=%as", c])
+            return (names, c, date), skipped
+    return None, skipped
+
+
+def scan_committed_secrets(root, inv):
+    """Secret files held by git in the scanned folder, and ones committed earlier. Returns
+    {"findings": [{file, keys, since, date, tracked}], "notes": [...], "not_checked": [...]}. Names, paths and commit ids only: a value is
+    read in memory to decide, and never stored, printed or sent."""
+    res = {"findings": [], "notes": [], "not_checked": []}
+    git = outside_tool("git", root)
+    if not git:
+        res["not_checked"].append("Secrets committed to git: git was not found on this computer, so the secret files were not checked.")
+        return res
+    dirs = [root] + [os.path.join(root, p["path"]) for p in inv["projects"] if p["path"] not in (".", "")]
+    scanned, seen_files = [], set()
+    for d in dirs:
+        if not os.path.isdir(d) or os.path.islink(d):
+            continue
+        shown = os.path.relpath(d, root)
+        err = []
+        code, top = git_run(git, d, ["rev-parse", "--show-toplevel"], stderr_out=err)
+        if code != 0 or not top:
+            if "dubious ownership" in (err[0] if err else ""):
+                res["not_checked"].append("Secrets committed to git: git refused `%s` (it belongs to another user)." % shown)
+            elif code == 127:
+                res["not_checked"].append("Secrets committed to git: git could not run in `%s`." % shown)
+            elif d == root:
+                res["notes"].append("This folder is not a git repository, so there is nothing committed to check.")
+            continue
+        if any(t == top and is_inside(d, sd) for t, sd in scanned):
+            continue  # a folder already covered by a scan of the same repository
+        scanned.append((top, d))
+        code, out = git_run(git, d, ["ls-files", "-z"], timeout=30)
+        if code != 0:
+            res["not_checked"].append("Secrets committed to git: the file list of `%s` could not be read." % shown)
+            continue
+        tracked = [x for x in out.split("\0") if x]
+        tracked_set = set(tracked)
+        has_head = git_run(git, d, ["rev-parse", "--verify", "-q", "HEAD"])[0] == 0
+        for rel in tracked:
+            if not secret_file_name(rel):
+                continue
+            full = os.path.join(d, rel)
+            key = os.path.realpath(full)
+            if key in seen_files:
+                continue
+            seen_files.add(key)
+            if os.path.islink(full):
+                continue
+            # the committed copy (HEAD), never the working folder: an uncommitted edit or a newly staged file was not committed
+            code, text = git_run(git, d, ["show", "HEAD:./%s" % rel], timeout=HISTORY_TIMEOUT)
+            if code != 0:
+                code2, listed = git_run(git, d, ["ls-tree", "--name-only", "HEAD", "--", rel], timeout=HISTORY_TIMEOUT)
+                if not has_head or (code2 == 0 and not listed.strip()):
+                    continue  # tracked but never committed: nothing in git history to rotate
+                res["not_checked"].append("Secrets committed to git: the committed copy of `%s` could not be read." % os.path.relpath(full, root))
+                continue
+            if len(text) > MAX_SECRET_FILE:
+                res["not_checked"].append("Secrets committed to git: `%s` is too large to read." % os.path.relpath(full, root))
+                continue
+            names, ok = literal_secret_names(os.path.basename(rel), text)
+            if not ok:
+                res["not_checked"].append("Secrets committed to git: `%s` could not be parsed." % os.path.relpath(full, root))
+                continue
+            if names:
+                since = first_commit(git, d, rel)
+                res["findings"].append({"file": os.path.relpath(full, root), "keys": names, "since": since[0],
+                                        "date": since[1] if len(since) > 1 else "", "tracked": True})
+                continue
+            past, skipped = past_secret(git, d, rel)  # a secret later swapped for a placeholder stays in earlier commits
+            if skipped:
+                res["not_checked"].append("Secrets committed to git: `%s` has %d older revisions that were not opened (only the newest %d were), so a secret replaced long ago could be missed."
+                                          % (os.path.relpath(full, root), skipped, HISTORY_REVS_MAX))
+            if past:
+                res["findings"].append({"file": os.path.relpath(full, root), "keys": past[0], "since": past[1], "date": past[2],
+                                        "tracked": True, "past": True})
+        code, out = git_run(git, d, ["-c", "core.quotepath=off", "log", "--all", "--relative", "--format=@%h", "--name-only"], timeout=HISTORY_TIMEOUT)
+        if code != 0:
+            res["not_checked"].append("Secrets committed to git: the history of `%s` could not be read in %d seconds, so earlier commits were not checked." % (shown, HISTORY_TIMEOUT))
+            continue
+        old = []
+        for line in out.splitlines():
+            if line and not line.startswith("@") and line not in tracked_set and line not in old and secret_file_name(line):
+                old.append(line)
+                if len(old) >= HISTORY_PATHS_MAX:
+                    break
+        for rel in old:
+            since = first_commit(git, d, rel)
+            res["findings"].append({"file": os.path.relpath(os.path.join(d, rel), root), "keys": [], "since": since[0],
+                                    "date": since[1] if len(since) > 1 else "", "tracked": False})
+    # shortcut: only the scanned folder and its projects are asked; a repo nested elsewhere with no lockfile is not seen
+    return res
+
+
+def committed_lines(res):
+    out = []
+    for f in res["findings"]:
+        since = "file in git since %s, %s" % (f["since"], f["date"]) if f["since"] else "in git"
+        if f.get("past"):
+            out.append("- `%s` (%s) held a value under %s in an earlier commit; the file now holds none, but the old value stays in git history. "
+                       "Rotate that key." % (f["file"], since, ", ".join(f["keys"])))
+        elif f["tracked"]:
+            out.append("- `%s` (%s) holds a value under %s. Rotate that key first, then stop tracking the file "
+                       "(git rm --cached %s, then add it to .gitignore). The old value stays in git history, so rotating is what protects you."
+                       % (f["file"], since, ", ".join(f["keys"]), shlex.quote(f["file"])))
+        else:
+            out.append("- `%s` (%s) was committed earlier and is no longer tracked; check whether it held a key. "
+                       "If it did, rotate that key: the old value stays in git history." % (f["file"], since))
+    return out
+
+
+
 # ---------------------------------------------------------------- inventory: build and write
 
 def build_inventory(folder):
     root = os.path.abspath(folder)
     inv = {"generated": today(), "folder": os.path.basename(root), "projects": [], "mcp": [],
-           "runtimes": [], "unreadable": [], "too_deep": []}
+           "runtimes": [], "unreadable": [], "too_deep": [], "tools": [], "tool_envs": []}
     scan_projects(root, inv)
     scan_mcp(root, inv)
+    scan_tools(root, inv)
     py_name = "python" if platform_name() == "windows" else "python3"
     for name, exe in (("node", outside_tool("node", root)), ("python", outside_tool(py_name, root))):
         code, out = run_cmd([exe, "--version"]) if exe else (127, "")
@@ -788,6 +1102,13 @@ def render_inventory(inv):
             note = " : pinned `%s %s`" % (m["package"]["name"], m["package"]["version"])
         L.append("- `%s` from %s, runs `%s`%s" % (m["name"], m["source"], m["command"], note))
     if not inv["mcp"]:
+        L.append("None found.")
+    L += ["", "## Tools on this computer", ""]
+    for t in inv.get("tools", []):
+        L.append("- %s %s (%s)" % (t["name"], t["version"] or "version not found", t["path"]))
+    for e in inv.get("tool_envs", []):
+        L.append("- uv tool environment `%s`: certifi %s, pip %s" % (e["tool"], e["certifi"] or "not installed", e["pip"] or "not installed"))
+    if not inv.get("tools"):
         L.append("None found.")
     L += ["", "## Runtimes", ""]
     for r in inv["runtimes"]:
@@ -932,6 +1253,7 @@ def collect_targets(inv, stats=None):
                 continue
             t.append({"ecosystem": k["ecosystem"], "name": k["name"], "version": k["version"].lstrip("v"),
                       "project": "MCP server %s" % m["name"], "dev": False, "deploy": False})
+    t += tool_targets(inv)
     if stats is not None:
         stats["private"], stats["invalid"] = len(private_seen), invalid
     return t
@@ -988,7 +1310,7 @@ def osv_check(targets, cache_dir, errors):
                 "id": vid, "summary": str(v.get("summary") or "no summary available")[:200],
                 "severity": vuln_severity(v), "fixed": fixed_versions(v, t["ecosystem"], t["name"]),
                 "package": t["name"], "version": t["version"], "ecosystem": t["ecosystem"],
-                "project": t["project"], "dev": t["dev"], "deploy": t["deploy"]})
+                "project": t["project"], "dev": t["dev"], "deploy": t["deploy"], "tool": bool(t.get("tool"))})
     return findings
 
 
@@ -1041,7 +1363,8 @@ def make_report(inv, findings, errors, osv_ok, skipped=None):
     return {"date": today(), "folder": inv["folder"], "osv_ok": osv_ok, "findings": findings or [],
             "runtimes": [r for r in inv["runtimes"] if r["version"]],
             "mcp": [dict(m, news_proof=mcp_news_proof(m, lockfile_public_npm(inv))) for m in inv["mcp"]],
-            "counts": counts, "not_checked": errors + unreadable + not_parsed + skip_notes(skipped), "agent_notes": []}
+            "tools": inv.get("tools", []), "tool_envs": inv.get("tool_envs", []),
+            "counts": counts, "not_checked": errors + unreadable + not_parsed + skip_notes(skipped) + tool_skip_notes(inv), "agent_notes": []}
 
 
 def read_json_file(path):
@@ -1128,7 +1451,8 @@ def group_findings(findings):
 def render_report(rep, diff):
     red = [f for f in rep["findings"] if f["severity"] in ("HIGH", "CRITICAL") and f["deploy"] and not f["dev"]]
     red_keys = {f["key"] for f in red}
-    rest = [f for f in rep["findings"] if f["key"] not in red_keys]
+    rest = [f for f in rep["findings"] if f["key"] not in red_keys and not f.get("tool")]
+    tool_findings = [f for f in rep["findings"] if f.get("tool")]
     L = ["# Stack Guard check, %s" % rep["date"], ""]
     if rep.get("update"):
         L += [rep["update"], ""]
@@ -1136,7 +1460,19 @@ def render_report(rep, diff):
     L += diff_lines(diff, True)
     L += ["", "## 🔴 Fix first", "", "High or critical problems in live packages of a project that has a deploy config.", ""]
     L += group_findings(red) or ["None."]
+    L += ["", "## Secrets committed to git", ""]
+    L += committed_lines({"findings": rep.get("committed_secrets") or []}) or ["None found in the usual secret files."]
+    L += ["- " + n for n in rep.get("committed_notes", [])]
     L += ["", "## 🟠 Also worth fixing", ""] + (group_findings(rest) or ["None."])
+    L += ["", "## Tools on this computer", ""]
+    for t in rep.get("tools", []):
+        L.append("- %s %s (%s)" % (t["name"], t["version"] or "version not found", t["path"]))
+    for e in rep.get("tool_envs", []):
+        L.append("- uv tool environment `%s`: certifi %s, pip %s" % (e["tool"], e["certifi"] or "not installed", e["pip"] or "not installed"))
+    if not rep.get("tools"):
+        L.append("None found.")
+    else:
+        L += [""] + (group_findings(tool_findings) or ["No known problems in these tools."])
     L += ["", "## 🟡 Runtimes", ""]
     for r in rep["runtimes"]:
         state = {"unsupported": "NO LONGER SUPPORTED", "supported": "supported", "unknown": "support date unknown"}[r["status"]]
@@ -1173,9 +1509,16 @@ def notify_text(rep, diff, prev=None, hidden=frozenset()):
         head += "first check done"
     else:
         head += "%d new, %d fixed, %d runtime, %d MCP" % (len(diff["new"]), len(diff["fixed"]), len(diff["runtimes"]), len(diff["mcp"]))
+    n_cs = len(rep.get("committed_secrets") or [])
+    if n_cs:
+        head += "; %d secret file(s) committed to git" % n_cs
     if rep["not_checked"]:
         head += "; some things were not checked"
+    new_keys = {x["key"] for x in diff["new"] if x.get("key")}
+    hit = any(f["key"] in new_keys and f["severity"] in ("HIGH", "CRITICAL") and f["deploy"] and not f["dev"] for f in rep.get("findings", []))
     lines = ([rep.get("update_short") or rep["update"]] if rep.get("update") else []) + [head] + ["- " + x["text"] for x in diff["new"] if x.get("key") not in hidden][:9]
+    if hit:
+        lines.append("Run /stack-guard to check whether these were used against you.")
     for title, key in (("News", "news"), ("Meaning", "explain")):
         if prev is not None and str(rep.get(key) or "").strip() == str(prev.get(key) or "").strip():
             continue  # same text as the last report: already sent once
@@ -1437,6 +1780,9 @@ def cmd_check(folder, notify, agents=False):
     findings = osv_check(collect_targets(inv, skipped), state_dir(folder, "cache"), errors)
     eol_check(inv["runtimes"], errors)
     rep = make_report(inv, findings, errors, findings is not None, skipped)
+    cs = scan_committed_secrets(os.path.abspath(folder), inv)
+    rep["committed_secrets"], rep["committed_notes"] = cs["findings"], cs["notes"]
+    rep["not_checked"] = rep["not_checked"] + cs["not_checked"]
     upd = update_line()
     if upd:
         rep["update"] = upd
@@ -1451,7 +1797,10 @@ def cmd_check(folder, notify, agents=False):
     write_file(os.path.join(reports, rep["date"] + ".md"), render_report(rep, diff))
     write_file(os.path.join(reports, rep["date"] + ".json"), json.dumps(rep, indent=1))
     sev = [f for f in rep["findings"] if f["severity"] in ("HIGH", "CRITICAL")]
-    print("Stack Guard check %s: %d known problems (%d high or critical)." % (rep["date"], len(rep["findings"]), len(sev)))
+    n_cs = len(rep["committed_secrets"])
+    print("Stack Guard check %s: %d known problems (%d high or critical)." % (rep["date"], len(rep["findings"]) + n_cs, len(sev) + n_cs))
+    if n_cs:
+        print("Secret files committed to git: %d (see the report; rotate those keys first)." % n_cs)
     print("Report: %s/reports/%s.md" % (STATE_DIR, rep["date"]))
     if rep.get("update"):
         print(rep["update"])
