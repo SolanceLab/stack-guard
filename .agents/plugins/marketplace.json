@@ -1,0 +1,12 @@
+{
+  "name": "stack-guard",
+  "interface": { "displayName": "stack-guard" },
+  "plugins": [
+    {
+      "name": "stack-guard",
+      "source": { "source": "local", "path": "./plugins/stack-guard" },
+      "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
+      "category": "Developer Tools"
+    }
+  ]
+}

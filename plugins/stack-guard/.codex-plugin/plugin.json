@@ -1,0 +1,37 @@
+{
+  "name": "stack-guard",
+  "version": "1.1.0",
+  "description": "One-prompt security check and safe fix for everything you build and run: finds what you run, checks packages, MCP servers and runtimes, reads this fortnight's security news, and applies safe fixes after your yes.",
+  "author": {
+    "name": "SolanceLab",
+    "url": "https://github.com/SolanceLab"
+  },
+  "homepage": "https://github.com/SolanceLab/stack-guard",
+  "repository": "https://github.com/SolanceLab/stack-guard",
+  "license": "MIT",
+  "keywords": [
+    "security",
+    "dependencies",
+    "audit",
+    "npm",
+    "python",
+    "mcp"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "stack-guard",
+    "shortDescription": "Check your stack for security holes and fix the safe ones",
+    "category": "Developer Tools",
+    "developerName": "SolanceLab",
+    "defaultPrompt": [
+      "Run stack-guard on this folder",
+      "Check my stack for security problems, audit only"
+    ],
+    "longDescription": "Audit local projects, packages, runtimes, deployment configuration and MCP servers, check this fortnight's security news for your exact versions, then apply approved same-major dependency fixes and verify the result.",
+    "capabilities": [
+      "Read",
+      "Write"
+    ]
+  },
+  "requires_local_executor": true
+}

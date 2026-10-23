@@ -12,7 +12,7 @@ Goal: close the holes without breaking anything, and leave a clear trail. The us
 0. **Whose code is it?** Tests and builds execute the project's own scripts. For the user's own projects that is normal. For a project they did not write (a cloned repo, a template, a download: check `git remote -v` and the README), ask before running anything in it, and skip it without a yes.
 1. **Clean start.** `git status --short` must be empty. When it shows changes, skip the project and say why ("has unsaved work, left alone so nothing of yours gets mixed in"). Not a git repo → work on a copy instead: copy the project (without `node_modules`/`.venv`) to a scratch folder, fix there, and hand the user the changed files.
 2. **Backup.** Copy every lockfile and manifest you may change (`package.json`, the lockfile, `requirements*.txt`, `pyproject.toml`, `poetry.lock`, `uv.lock`) to a scratch folder.
-3. **Baseline.** Record the audit numbers, the test result (passing count), and whether the build passes. Use the plain compile step when the `build` script also fetches data, rewrites content, or deploys (eg. `npx vite build`, `npx tsc --noEmit`, using the copy already in `node_modules/.bin`). A project whose tests or build already fail gets reported, not fixed.
+3. **Baseline.** Record the audit numbers, the test result (passing count), and whether the build passes. Use the plain compile step when the `build` script also fetches data, rewrites content, or deploys (eg. `./node_modules/.bin/vite build`, `./node_modules/.bin/tsc --noEmit`). A project whose tests or build already fail gets reported, not fixed.
 
 ## Fix, safest first, install scripts off
 
@@ -27,7 +27,7 @@ Goal: close the holes without breaking anything, and leave a clear trail. The us
 After the fix, compare with the baseline:
 1. Audit again: production high/critical down to 0 or the documented leftovers.
 2. Tests: the same count passes. Build: passes.
-3. Website: serve the built output locally (`npx vite preview --port <free port>` from `node_modules/.bin`), open the main routes with a browser tool when available, confirm each page shows its heading and the console has no errors, then stop the server.
+3. Website: serve the built output locally with the project's own installed command (eg. `./node_modules/.bin/vite preview --port <free port>`; use `npx` only for an executable already installed in the project, so nothing gets downloaded), open the main routes with a browser tool when available, confirm each page shows its heading and the console has no errors, then stop the server.
 4. MCP server (whenever an MCP SDK changed — required, because SDK upgrades have changed session handling before): start it locally, then send JSON-RPC `initialize` and `tools/list` (or connect with the SDK client). Confirm the tool list is unchanged and a request without credentials is still refused. Stop it afterwards.
 5. Leftovers: for each unfixed finding, check the built output (`grep -rl <pkg> dist/`) and report the result as evidence.
 

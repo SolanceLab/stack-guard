@@ -10,7 +10,7 @@ Work in three stages. Talk to the user in plain, short words; assume they are bu
 **Stage 1 — Audit.** Load the `stack-guard:stack-audit` skill and follow it fully. Scope:
 - A folder in the arguments → scan that folder.
 - No folder → scan the current folder. When the current folder holds no project (eg. it is the home folder), list the code folders you can see (names only) and ask once: "Scan these? (yes / pick some / no)". Default to the current folder when there is no answer.
-Run the per-project checks in parallel with the `stack-auditor` agent, one agent per project, when there are more than three projects. When the audits are done, start the `stack-news-scout` agent with the full list of components and versions (the skill's step 3b).
+Run the per-project checks in parallel with the `stack-auditor` agent, one agent per project, when there are more than three projects. When the audits are done, start the `stack-news-scout` agent with the full list of components and versions (the skill's step 3b). The MCP check (step 2b) and the news check (step 3b) run on every audit, `--audit-only` included; the report may only list one under "Not checked" with the reason it failed.
 
 **Stage 2 — Report.** Give the user the report in the skill's format. End with one closed question:
 "Fix the safe package updates now? I'll update packages inside each project, check that tests and builds still pass, and put things back if anything breaks. I won't deploy, commit, upgrade Node/Python, or restart services without asking you separately. (yes / no / only <project>)"

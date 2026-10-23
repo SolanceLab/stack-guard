@@ -1,6 +1,6 @@
 # stack-guard
 
-**One prompt to check everything you build and run with Claude Code for known security holes, and fix the safe ones.**
+**One prompt to check everything you build and run with Claude Code or Codex for known security holes, and fix the safe ones.**
 
 Supply-chain attacks and urgent security releases are landing every week (hijacked PyPI and npm packages, Node.js and Python security releases, MCP SDK fixes). stack-guard lets Claude find what you actually run, check it against the public vulnerability databases, read this fortnight's security news for your exact versions, explain it all in plain words, and then patch what can be patched safely, after your yes.
 
@@ -12,6 +12,15 @@ In Claude Code:
 /plugin marketplace add SolanceLab/stack-guard
 /plugin install stack-guard@stack-guard
 ```
+
+### Codex users
+
+```
+codex plugin marketplace add SolanceLab/stack-guard
+codex plugin add stack-guard@stack-guard
+```
+
+Start a new Codex conversation, then type `$stack-guard:run-stack-guard audit this folder`, or just ask: *"run stack-guard on this folder"* (add *"audit only"* to change nothing). Codex has no slash commands for plugins, so the `run-stack-guard` skill is the entry point; it does the same audit, news check and safe fixes.
 
 ## Use
 
@@ -67,7 +76,7 @@ Container image scanning, GitHub Actions pinning, package signatures/provenance,
 
 ## Needs
 
-Claude Code. Node/npm for JavaScript projects. For Python, [`uv`](https://docs.astral.sh/uv/) (or `pipx`) makes the check faster; without it, stack-guard makes a throwaway environment and deletes it afterwards.
+Claude Code or Codex. Node/npm for JavaScript projects. For Python, [`uv`](https://docs.astral.sh/uv/) (or `pipx`) makes the check faster; without it, stack-guard makes a throwaway environment and deletes it afterwards.
 
 ## Help make it better
 
