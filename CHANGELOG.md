@@ -2,7 +2,7 @@
 
 ## 1.5.3
 
-- Windows: the hooks and the daily watch use `python` there, as the script already did. `python3` on Windows is often a Microsoft Store shortcut or a different Python.
+- Windows: the hooks and the daily watch use `python` there, as the script already did. `python3` on Windows is often a Microsoft Store shortcut or a different Python. Reported by Ajax Vale, with Shaz ([@ajxvale](https://github.com/ajxvale)).
 
 ## 1.5.2
 
