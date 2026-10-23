@@ -1,5 +1,5 @@
 {
-  "description": "stack-guard secret guard: keeps secret files and keys out of the chat.",
+  "description": "stack-guard hooks: the secret guard keeps secret files and keys out of the chat; the update check says when a newer stack-guard is out.",
   "hooks": {
     "PreToolUse": [
       {
@@ -31,6 +31,18 @@
           {
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/secret_guard.py\" --stop",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v python3 >/dev/null 2>&1 && python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/update_check.py\" https://raw.githubusercontent.com/SolanceLab/stack-guard/main/plugins/stack-guard/.claude-plugin/plugin.json stack-guard || true",
             "timeout": 10
           }
         ]
