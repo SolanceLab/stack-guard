@@ -1,0 +1,44 @@
+---
+name: stack-fix
+description: Apply the safe package fixes that stack-audit found inside a project (same-major upgrades, install scripts off), prove tests and build still pass, put everything back if anything breaks, and stop before deploys, commits, runtime upgrades or service restarts. Use only after the user said yes to fixing.
+---
+
+# Stack fix (after the user's yes)
+
+Goal: close the holes without breaking anything, and leave a clear trail. The user's yes covers **package updates inside the named projects**. Runtime upgrades, service restarts, deploys, commits and pushes each need their own yes; offer them at the end with the exact command.
+
+## Before touching a project
+
+0. **Whose code is it?** Tests and builds execute the project's own scripts. For the user's own projects that is normal. For a project they did not write (a cloned repo, a template, a download: check `git remote -v` and the README), ask before running anything in it, and skip it without a yes.
+1. **Clean start.** `git status --short` must be empty. When it shows changes, skip the project and say why ("has unsaved work, left alone so nothing of yours gets mixed in"). Not a git repo → work on a copy instead: copy the project (without `node_modules`/`.venv`) to a scratch folder, fix there, and hand the user the changed files.
+2. **Backup.** Copy every lockfile and manifest you may change (`package.json`, the lockfile, `requirements*.txt`, `pyproject.toml`, `poetry.lock`, `uv.lock`) to a scratch folder.
+3. **Baseline.** Record the audit numbers, the test result (passing count), and whether the build passes. Use the plain compile step when the `build` script also fetches data, rewrites content, or deploys (eg. `npx vite build`, `npx tsc --noEmit`, using the copy already in `node_modules/.bin`). A project whose tests or build already fail gets reported, not fixed.
+
+## Fix, safest first, install scripts off
+
+- **npm**: `npm audit fix --ignore-scripts` (no `--force`, no `--legacy-peer-deps`). If npm crashes with an internal error, use `npx -y npm@11.6.2 audit fix --ignore-scripts`. For a finding that remains whose fix is the same major, raise that direct dependency's range to the patched version (eg. `"vite": "^7.3.7"`) and run `npm install --ignore-scripts`. When tests then fail because a native package was not built (eg. `sharp`, `better-sqlite3`, `bcrypt`), run `npm rebuild <that package>` for that one named package only, and name it in the report: rebuilding runs that package's own build script.
+- **pnpm**: `pnpm update <pkg>@<fixed> --ignore-scripts` (same major). **yarn berry**: `yarn up <pkg>@<fixed>` with `enableScripts: false` for the run (`YARN_ENABLE_SCRIPTS=false`). **yarn classic**: `yarn upgrade <pkg>@<fixed> --ignore-scripts`. **bun**: `bun update <pkg>` then confirm the version; report when it cannot pin.
+- **Python**: install from ready-made wheels only, so no freshly downloaded build code runs. With a lockfile, use its tool so the lock stays the truth: `uv lock --upgrade-package <pkg>` then `uv sync --no-build`; `poetry update <pkg>` (with `PIP_ONLY_BINARY=:all:` set for the run); `pipenv update <pkg>` (same). With `requirements.txt`: set `<pkg>==<fixed>` in the file, keeping any upper bound, then `<venv python> -m pip install --only-binary=:all: -r requirements.txt`. A bare venv: `<venv python> -m pip install --only-binary=:all: "<pkg>==<fixed>"`, after saving `pip freeze` to scratch. When a package has no wheel for this computer, leave it and report it.
+- **Major-version jump needed** → leave it; report what the jump would change and let the user decide.
+- **Runtime or system packages** (Node/Python version, `brew`/`apt` packages, Docker base image): do not change them under this yes. Report the exact command (eg. `brew upgrade python@3.14`, `nvm install 22`, Dockerfile `FROM node:22-slim`) and ask separately.
+
+## Prove it still works
+
+After the fix, compare with the baseline:
+1. Audit again: production high/critical down to 0 or the documented leftovers.
+2. Tests: the same count passes. Build: passes.
+3. Website: serve the built output locally (`npx vite preview --port <free port>` from `node_modules/.bin`), open the main routes with a browser tool when available, confirm each page shows its heading and the console has no errors, then stop the server.
+4. MCP server (whenever an MCP SDK changed — required, because SDK upgrades have changed session handling before): start it locally, then send JSON-RPC `initialize` and `tools/list` (or connect with the SDK client). Confirm the tool list is unchanged and a request without credentials is still refused. Stop it afterwards.
+5. Leftovers: for each unfixed finding, check the built output (`grep -rl <pkg> dist/`) and report the result as evidence.
+
+## When something breaks
+
+Put it back exactly: restore the backed-up files from scratch over the changed ones (only those files), then reinstall from the restored lockfile with scripts off (`npm ci --ignore-scripts`, then `npm rebuild <pkg>` only for native packages that were built before; `pip install --only-binary=:all: -r`, `uv sync --no-build`), and delete any new untracked files you created (`git status --short` shows them). Confirm `git status --short` is empty again (or matches what it was), and report the failure with its error.
+
+## Leave things as you found them
+
+Stop every server, preview, and container you started; remove Docker images you built; delete scratch folders. Leave deliberate locks alone: a route that answers 404 or 401 on purpose (a paywall, an embargo, a login) is working, not broken.
+
+## Hand back
+
+Per project: packages changed (old → new), audit/tests/build before and after, leftovers and whether they appear in the built output, what needs a separate yes (runtime, service restart, major jump) with the exact command, and the deploy command from the project's own scripts. Commit only when the user asks ("Security update: <packages>"). After the user deploys, offer to check that the live site or service answers as before.

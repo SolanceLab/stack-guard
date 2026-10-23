@@ -1,0 +1,8 @@
+{
+  "name": "stack-guard",
+  "version": "1.0.0",
+  "description": "One-prompt security check and safe fix for everything you build and run with Claude Code.",
+  "author": { "name": "SolanceLab" },
+  "license": "MIT",
+  "keywords": ["security", "dependencies", "audit", "npm", "python", "cloudflare", "fly", "mcp"]
+}
