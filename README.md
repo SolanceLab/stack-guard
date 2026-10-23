@@ -62,7 +62,7 @@ You can also just say: *"check my stack for security problems"*.
 
 Best practice for **any** plugin, this one included, even from people you trust: a plugin is instructions that run commands on your computer.
 
-1. **Read it.** stack-guard is instructions in plain Markdown plus **one small Python script** (`scripts/stack_guard.py`, standard library only, no installs) — no hooks, no MCP servers. After installing, see what it adds with `claude plugin details stack-guard`, and read the files in `~/.claude/plugins/cache/stack-guard/`.
+1. **Read it.** stack-guard is instructions in plain Markdown plus **one small Python script** (`scripts/stack_guard.py`, standard library only, no installs) — one secret-guard hook (see Secret guard below), no MCP servers. After installing, see what it adds with `claude plugin details stack-guard`, and read the files in `~/.claude/plugins/cache/stack-guard/`.
 2. **Commit or back up your project first**, so any change is easy to undo.
 3. **Look before you fix.** Start with `/stack-guard --audit-only`: it reports and changes none of your code or packages.
 4. **Turn on Claude Code's sandbox** (macOS, Linux, WSL2): type `/sandbox`. Commands can then only write inside your project folder, and every new website needs your OK. When asked, allow `registry.npmjs.org`, `api.osv.dev`, `endoflife.date` and `pypi.org`. The sandbox covers the commands Claude runs; Claude's own file edits still follow your normal permission prompts. Docs: https://code.claude.com/docs/en/sandboxing
@@ -80,6 +80,24 @@ Best practice for **any** plugin, this one included, even from people you trust:
 **It never deploys, pushes, commits, upgrades Node/Python, or restarts services on its own.** It hands you the exact command and waits for your yes. Projects with unsaved changes are left alone.
 
 **Good to know:** fixing runs your project's own tests and build, which run your project's code. That is normal for your own projects; for a repo you cloned from someone else, stack-guard asks first.
+
+## Secret guard
+
+Your agents can still work with secrets: use them, rotate them, set them. During a stack-guard run, the guard only stops a secret's value from being printed into the chat.
+
+Active only while stack-guard is working in a session (its commands, skills, agents, or the daily watch). Your other Claude Code work is untouched. Once you use stack-guard in a Claude Code session, the secret guard stays on for the rest of that session (a hook can see that stack-guard started, not reliably when it finished). Start a new session for work where you need the AI to open secret files.
+
+Three layers:
+
+1. **Stops before reading.** `Read`, `Grep` and shell commands (`cat`, `grep`, `head`, `sed`, `jq`, `python -c open(...)` and similar) that point at a secret file are blocked with a plain message: `.env` (but not `.env.example`), `.dev.vars`, `.npmrc`, `.netrc`, `.pgpass`, `secrets.*`, `*.pem`, `*.key`, SSH private keys, cloud credential files (`~/.aws/credentials`, gcloud, kube, docker), `~/.claude.json`, Codex `auth.json`. Bare `printenv` / `env` dumps and `security find-generic-password -w` printed to the screen are blocked too. Any shell command that names a secret file is blocked (so a Python, Ruby, Perl or Node one-liner that reads `.env` cannot slip past), unless it only uses the file without printing it: `export X=$(grep X .env)`, `source .env && npm test`, `cp`/`mv`/`rm`/`chmod`/`ls` on it, `sed -i`, writing to it (`>> .env`), or piping it into `wrangler secret put`, `gh secret set`, `security add-generic-password` or `curl -d @-`. Recursive searches (`grep -r .`, `rg --hidden`, `find ... -exec cat`) are blocked too; use `rg PATTERN` (it skips ignored files like `.env`) or name the source folders. `curl -H "Authorization: $(security find-generic-password -s x -w)"` passes. A `$(...)` that feeds a printing command (`echo "$(cat .env)"`) is blocked, and so are `printenv API_TOKEN`, `echo "$API_TOKEN"` and copying a secret file to the screen.
+2. **Redacts tool output.** After `Bash`, `Read` and `Grep` run, a PostToolUse hook scans the result for secret shapes and swaps each one for `[REDACTED ...]` before Claude sees it, then tells Claude to have you rotate (replace) the secret.
+3. **Catches and warns after replying.** When Claude finishes, a Stop hook scans its last reply for secret shapes (GitHub, OpenAI/Anthropic, Slack, AWS and Google keys, JWTs, private keys, Discord bot tokens, passwords inside URLs). On a hit, Claude is told to say so in one line and to have you rotate (replace) the secret. The secret itself is never repeated.
+
+It is a seatbelt, not a vault: it catches the common ways a secret gets printed, not every possible one. To turn it off, run `/plugin disable stack-guard` or remove the plugin.
+
+**Claude Code only;** in Codex, the written secrets rule in every stack-guard instruction applies.
+
+Prompted by a report from [@ayakohi](https://github.com/ayakohi).
 
 ## What leaves your computer
 
@@ -106,6 +124,10 @@ Spotted a gap? A stack it misses, a check that's wrong, a fix that went sideways
 - **Open an issue:** https://github.com/SolanceLab/stack-guard/issues. Say what you ran, what you expected, and what happened. Leave keys, tokens and private project names out.
 - **Send a pull request:** everything lives in plain Markdown under `plugins/stack-guard/` (`commands/`, `skills/`, `agents/`). Keep the safety rules intact: the audit runs no freshly downloaded code, fixes stay same-major with install scripts off, and nothing deploys, commits, or touches the wider machine without the user's separate yes.
 - **Found a security problem in stack-guard itself?** Please report it privately through GitHub's "Report a vulnerability" button on the Security tab, not in a public issue.
+
+## Thanks
+
+Thanks to Aya ([@ayakohi](https://github.com/ayakohi)) for spotting that an AI agent could print a secret into the chat while working. That report is why stack-guard has its secret guard.
 
 ## License
 

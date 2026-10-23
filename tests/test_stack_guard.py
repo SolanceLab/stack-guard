@@ -278,9 +278,11 @@ class AgentTests(Base):
         super().setUp()
         self.calls = []
         self.cwds = []
+        self.envs = []
 
-        def run(args, input_text=None, timeout=30, cwd=None):
+        def run(args, input_text=None, timeout=30, cwd=None, env=None):
             if os.path.basename(str(args[0])) in ("claude", "codex"):
+                self.envs.append(env)
                 self.calls.append((args, input_text, timeout))
                 self.cwds.append((cwd, os.listdir(cwd) if cwd else None))
                 kind = "news" if "WebSearch,WebFetch" in args or "--search" in args else "explain"
@@ -291,6 +293,11 @@ class AgentTests(Base):
             p = mock.patch.object(sg, target, new)
             p.start()
             self.addCleanup(p.stop)
+
+    def test_agents_carry_the_stack_guard_marker_for_the_secret_guard(self):
+        self.run_main("check", self.folder, "--agents")
+        self.assertTrue(self.envs)
+        self.assertTrue(all((e or {}).get("STACK_GUARD_ACTIVE") == "1" for e in self.envs), self.envs)
 
     def test_off_by_default_and_with_no_agents(self):
         self.run_main("check", self.folder)
@@ -1241,3 +1248,31 @@ class NoSecretsInOutput(Base):
         blob = "\n".join(written)
         self.assertNotIn("SECRETPART", blob)
         self.assertNotIn("user:pw", blob)
+
+
+class PersonaFreeAgents(Base):
+    """Field report 23 Oct: agents must not load the user's CLAUDE.md / AGENTS.md persona."""
+
+    def test_claude_agent_loads_no_settings_or_claude_md(self):
+        self.assertIn("--setting-sources=", sg.agent_argv("/usr/local/bin/claude", "news"))
+        self.assertIn("--setting-sources=", sg.agent_argv("/usr/local/bin/claude", "explain"))
+
+    def test_codex_agent_gets_clean_home_with_only_login(self):
+        real = os.path.join(self.home, ".codex")
+        os.makedirs(real)
+        with open(os.path.join(real, "auth.json"), "w") as f:
+            f.write("{}")
+        with open(os.path.join(real, "AGENTS.md"), "w") as f:
+            f.write("I am someone's persona")
+        seen = {}
+
+        def run(args, input_text=None, timeout=30, cwd=None, env=None, **k):
+            seen["home"] = (env or {}).get("CODEX_HOME")
+            seen["files"] = sorted(os.listdir(seen["home"])) if seen["home"] else None
+            return 0, "ok"
+        with mock.patch.dict(os.environ, {}, clear=False), mock.patch.object(sg, "run_cmd", run):
+            os.environ.pop("CODEX_HOME", None)
+            ok, _ = sg.run_agent("/usr/local/bin/codex", "explain", "hi")
+        self.assertTrue(ok)
+        self.assertEqual(seen["files"], ["auth.json"])
+        self.assertNotEqual(os.path.realpath(seen["home"]), os.path.realpath(real))

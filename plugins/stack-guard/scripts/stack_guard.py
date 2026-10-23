@@ -57,7 +57,7 @@ DEFAULT_TIME = "09:00"
 LABEL = "dev.stack-guard.watch"
 SECRET_WORD = re.compile(r"token|key|secret|password|auth", re.I)
 OSV_BATCH = "https://api.osv.dev/v1/querybatch"
-VERSION = "1.2.2"
+VERSION = "1.3.0"
 EOL_URL = "https://endoflife.date/api/%s.json"
 SKIP_DIRS = {"node_modules", "venv", "dist", "build", "worktrees", "__pycache__"}  # dot-folders are skipped too
 AGENT_DENY = "Bash,Edit,Write,Read,Glob,Grep,Agent,Skill,NotebookEdit"
@@ -84,11 +84,11 @@ def platform_name():
     return "darwin" if p == "darwin" else "windows" if p.startswith("win") else "linux"
 
 
-def run_cmd(args, input_text=None, timeout=30, cwd=None, stderr_out=None):
+def run_cmd(args, input_text=None, timeout=30, cwd=None, stderr_out=None, env=None):
     """Run a fixed command (list args, never a shell). Returns (exit code, stdout); 127 if missing.
     stderr_out, when it is a list, receives the command's stderr text as its one item."""
     try:
-        p = subprocess.run(args, input=input_text, capture_output=True, text=True, timeout=timeout, cwd=cwd)
+        p = subprocess.run(args, input=input_text, capture_output=True, text=True, timeout=timeout, cwd=cwd, env=env)
         if stderr_out is not None:
             stderr_out.append((p.stderr or "").strip())
         return p.returncode, (p.stdout or "").strip()
@@ -1192,8 +1192,10 @@ def find_agent_cli(root=None):
 
 def agent_argv(cli, kind):
     if os.path.basename(cli) == "claude":
+        # --setting-sources= : no user/project settings and no CLAUDE.md, so the agent arrives as plain Claude,
+        # not as the user's own companion persona (field report from a first user, 23 Oct 2026). Login still works.
         return [cli, "-p", "--model", "sonnet", "--allowedTools", "WebSearch,WebFetch" if kind == "news" else "",
-                "--disallowedTools", AGENT_DENY, "--strict-mcp-config"]
+                "--disallowedTools", AGENT_DENY, "--strict-mcp-config", "--setting-sources="]
     # Locked like Claude's: no shell, no file-reading tools, no apps/browser/computer use. Verified on codex-cli 0.162.1
     # (23 Oct 2026): a file-read request was refused and web search still answered. Only the news scout gets --search.
     # shortcut: flag names are tied to that version; a Codex update that renames one makes the step fail out loud.
@@ -1278,10 +1280,33 @@ def explain_prompt(items):
             "Findings:\n" + "\n".join(lines))
 
 
+def clean_codex_home(tmp):
+    """A fresh CODEX_HOME holding only a link to the user's login, so Codex loads no global AGENTS.md or config
+    (persona-free agent). Returns the path, or None when the link cannot be made (then the normal home is used)."""
+    real = os.environ.get("CODEX_HOME") or os.path.join(home_dir(), ".codex")
+    auth = os.path.join(real, "auth.json")
+    if not os.path.isfile(auth):
+        return None
+    home = os.path.join(tmp, "codex-home")
+    try:
+        os.makedirs(home, mode=0o700)
+        os.symlink(auth, os.path.join(home, "auth.json"))
+    except OSError:
+        return None
+    return home
+
+
 def run_agent(cli, kind, prompt):
     """Returns (ok, text). The prompt goes in on stdin; the agent's tools are locked by the flags in agent_argv."""
-    with tempfile.TemporaryDirectory(prefix="stack-guard-agent-") as empty:  # empty folder: nothing of the audited repo to read
-        code, out = run_cmd(agent_argv(cli, kind), input_text=prompt, timeout=AGENT_TIMEOUT, cwd=empty)
+    with tempfile.TemporaryDirectory(prefix="stack-guard-agent-") as tmp:
+        empty = os.path.join(tmp, "work")  # empty folder: nothing of the audited repo to read
+        os.makedirs(empty)
+        env = dict(os.environ, STACK_GUARD_ACTIVE="1")  # tells the secret guard hook this session is stack-guard's
+        if os.path.basename(cli).startswith("codex"):
+            ch = clean_codex_home(tmp)
+            if ch:
+                env["CODEX_HOME"] = ch
+        code, out = run_cmd(agent_argv(cli, kind), input_text=prompt, timeout=AGENT_TIMEOUT, cwd=empty, env=env)
     if code == 127:
         return False, "agent step failed: %s could not run or took longer than %d seconds" % (os.path.basename(cli), AGENT_TIMEOUT)
     if code != 0 or not out:
