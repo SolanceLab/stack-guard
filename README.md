@@ -90,6 +90,8 @@ Best practice for **any** plugin, this one included, even from people you trust:
 
 ## Was I hit?
 
+The checker agent has no shell: it can only read files, search and open public advisory pages, so it cannot change or send anything. The few commands it needs (lockfile history, running process names) run in your main session, where you see them.
+
 Fixing a hole does not tell you whether someone used it before you fixed it. After the audit, on every run (`--audit-only` too, since it changes nothing), stack-guard asks, for each high or critical finding in a project that has a deploy config and for each supply-chain story in the news:
 
 1. **Reachable?** It reads the advisory and writes down what an attacker needs (a feature, a route, a version range), then searches your project for it. Not reachable means the precondition is absent, and it says where it looked.

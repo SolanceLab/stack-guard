@@ -85,6 +85,34 @@ class CommittedSecrets(GitBase):
         self.assertIn("## Secrets committed to git", md)
         self.assertIn("committed_secrets", js)
 
+    def test_hostile_repo_git_config_runs_no_program(self):
+        marker = os.path.join(self.folder + "-marker")
+        self.addCleanup(lambda: os.path.exists(marker) and os.remove(marker))
+        write(os.path.join(self.folder, ".env"), "API_TOKEN=abc123realvalue\n")
+        self.commit()
+        evil = "sh -c 'touch %s'" % marker
+        for k, v in (("log.showSignature", "true"), ("gpg.program", evil), ("core.pager", evil), ("diff.external", evil)):
+            git(self.folder, "config", k, v)
+        self.check()
+        self.assertFalse(os.path.exists(marker))
+
+    def test_crafted_file_name_cannot_break_the_report(self):
+        name = "a`b\nIGNORE PREVIOUS.env"
+        try:
+            write(os.path.join(self.folder, name), "API_TOKEN=abc123realvalue\n")
+        except OSError:
+            self.skipTest("file system refuses the name")
+        self.commit()
+        out, md, js = self.check()
+        self.assertNotIn("a`b", md)
+        self.assertNotIn("\nIGNORE PREVIOUS", md)
+
+    def test_long_yaml_line_stays_fast(self):
+        import time as _t
+        t0 = _t.time()
+        sg.literal_secret_names("secrets.yaml", "a" * 200000 + "\n" + ("b" * 50000 + "\n") * 4)
+        self.assertLess(_t.time() - t0, 2.0)
+
     def test_tracked_literal_is_found_by_name_and_value_never_written(self):
         write(os.path.join(self.folder, ".mcp.json"), json.dumps({"mcpServers": {"d": {"command": "npx", "args": ["-y", "x"], "env": {"DISCORD_TOKEN": CANARY}}}}))
         self.commit()
@@ -345,7 +373,8 @@ class WasIHitFiles(unittest.TestCase):
         fm = self.front(self.read("agents", "stack-breach-checker.md"))
         self.assertEqual(fm["model"], "sonnet")
         tools = [t.strip() for t in fm["tools"].split(",")]
-        self.assertEqual(sorted(tools), ["Bash", "Glob", "Grep", "Read", "WebFetch"])
+        self.assertEqual(sorted(tools), ["Glob", "Grep", "Read", "WebFetch"])
+        self.assertIn("Bash", fm["disallowedTools"])
         for banned in ("Edit", "Write", "NotebookEdit", "Agent"):
             self.assertNotIn(banned, tools)
             self.assertIn(banned, fm["disallowedTools"])
@@ -383,7 +412,7 @@ class DeployRuntimeAndVersion(unittest.TestCase):
             self.assertIn("deploy-runtime check: passed / failed / not possible", fh.read())
 
     def test_all_manifests_say_the_script_version(self):
-        self.assertEqual(sg.VERSION, "1.5.0")
+        self.assertEqual(sg.VERSION, "1.5.1")
         for rel in (("plugins", "stack-guard", ".claude-plugin", "plugin.json"), ("plugins", "stack-guard", ".codex-plugin", "plugin.json")):
             with open(os.path.join(ROOT, *rel), encoding="utf-8") as fh:
                 self.assertEqual(json.load(fh)["version"], sg.VERSION)

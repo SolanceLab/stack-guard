@@ -63,7 +63,7 @@ DEFAULT_TIME = "09:00"
 LABEL = "dev.stack-guard.watch"
 SECRET_WORD = re.compile(r"token|key|secret|password|auth", re.I)
 OSV_BATCH = "https://api.osv.dev/v1/querybatch"
-VERSION = "1.5.0"
+VERSION = "1.5.1"
 EOL_URL = "https://endoflife.date/api/%s.json"
 SKIP_DIRS = {"node_modules", "venv", "dist", "build", "worktrees", "__pycache__"}  # dot-folders are skipped too
 LATEST_URL = "https://raw.githubusercontent.com/SolanceLab/stack-guard/main/.claude-plugin/marketplace.json"
@@ -799,9 +799,12 @@ def tool_skip_notes(inv):
 
 # ---------------------------------------------------------------- committed secrets
 
-GIT_SAFE = ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=" + os.devnull]  # a cloned repo's config must not run code
+GIT_SAFE = ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=" + os.devnull,  # a scanned repo's own config must never run a program
+            "-c", "core.pager=cat", "-c", "log.showSignature=false", "-c", "gpg.program=false", "-c", "gpg.ssh.program=false",
+            "-c", "gpg.x509.program=false", "-c", "core.sshCommand=false", "-c", "diff.external=false"]
 HISTORY_TIMEOUT = 20
 MAX_SECRET_FILE = 1024 * 1024
+GIT_READ = ["--no-textconv", "--no-ext-diff"]
 ENV_EXAMPLES = {".env.example", ".env.sample", ".env.template"}
 HISTORY_REVS_MAX = 200
 TEST_SEGMENTS = {"test", "tests", "fixtures", "__fixtures__"}
@@ -824,10 +827,16 @@ def secret_file_name(path):
 
 
 def is_placeholder(v):
-    v = str(v).strip().strip("'\"").strip()
+    v = str(v)[:4096].strip().strip("'\"").strip()
     if not v:
         return True
     return v.startswith("$") or bool(PLACEHOLDER_FORMS.fullmatch(v))
+
+
+def safe_path(p):
+    """A file path as it may appear in a report an AI reads: no backticks, newlines or control characters, capped."""
+    p = "".join(ch if ch.isprintable() and ch not in "`" else "?" for ch in str(p))
+    return p if len(p) <= 200 else p[:197] + "..."
 
 
 def safe_name(k):
@@ -861,7 +870,7 @@ def literal_secret_names(base, text):
         except ValueError:
             return [], False
     if low in ("secrets.yaml", "secrets.yml"):
-        names = [safe_name(m.group(1)) for m in re.finditer(r"^\s*([^\s#:][^:]*?)\s*:\s*(\S.*)$", text, re.M) if not is_placeholder(m.group(2))]
+        names = [safe_name(m.group(1)) for m in re.finditer(r"^[ \t]*([^\s#:][^:\n]*?)[ \t]*:[ \t]*(\S.*)$", text, re.M) if not is_placeholder(m.group(2))]
         return sorted(set(names)), True
     if low == ".npmrc":
         return (["_authToken"] if any(not is_placeholder(m.group(1)) for m in re.finditer(r"_authToken\s*=\s*(.*)", text)) else []), True
@@ -897,7 +906,10 @@ def past_secret(git, d, rel):
     revs = out.split()
     skipped = max(0, len(revs) - HISTORY_REVS_MAX)
     for c in reversed(revs[:HISTORY_REVS_MAX]):
-        code, blob = git_run(git, d, ["show", "%s:./%s" % (c, rel)], timeout=HISTORY_TIMEOUT)
+        code, size = git_run(git, d, ["cat-file", "-s", "%s:./%s" % (c, rel)], timeout=HISTORY_TIMEOUT)
+        if code != 0 or not size.strip().isdigit() or int(size) > MAX_SECRET_FILE:
+            continue  # too large to be a config file: never read it
+        code, blob = git_run(git, d, ["show"] + GIT_READ + ["%s:./%s" % (c, rel)], timeout=HISTORY_TIMEOUT)
         if code != 0:
             continue
         names, ok = literal_secret_names(os.path.basename(rel), blob)
@@ -953,31 +965,31 @@ def scan_committed_secrets(root, inv):
             if os.path.islink(full):
                 continue
             # the committed copy (HEAD), never the working folder: an uncommitted edit or a newly staged file was not committed
-            code, text = git_run(git, d, ["show", "HEAD:./%s" % rel], timeout=HISTORY_TIMEOUT)
+            code, text = git_run(git, d, ["show"] + GIT_READ + ["HEAD:./%s" % rel], timeout=HISTORY_TIMEOUT)
             if code != 0:
                 code2, listed = git_run(git, d, ["ls-tree", "--name-only", "HEAD", "--", rel], timeout=HISTORY_TIMEOUT)
                 if not has_head or (code2 == 0 and not listed.strip()):
                     continue  # tracked but never committed: nothing in git history to rotate
-                res["not_checked"].append("Secrets committed to git: the committed copy of `%s` could not be read." % os.path.relpath(full, root))
+                res["not_checked"].append("Secrets committed to git: the committed copy of `%s` could not be read." % safe_path(os.path.relpath(full, root)))
                 continue
             if len(text) > MAX_SECRET_FILE:
-                res["not_checked"].append("Secrets committed to git: `%s` is too large to read." % os.path.relpath(full, root))
+                res["not_checked"].append("Secrets committed to git: `%s` is too large to read." % safe_path(os.path.relpath(full, root)))
                 continue
             names, ok = literal_secret_names(os.path.basename(rel), text)
             if not ok:
-                res["not_checked"].append("Secrets committed to git: `%s` could not be parsed." % os.path.relpath(full, root))
+                res["not_checked"].append("Secrets committed to git: `%s` could not be parsed." % safe_path(os.path.relpath(full, root)))
                 continue
             if names:
                 since = first_commit(git, d, rel)
-                res["findings"].append({"file": os.path.relpath(full, root), "keys": names, "since": since[0],
+                res["findings"].append({"file": safe_path(os.path.relpath(full, root)), "keys": names, "since": since[0],
                                         "date": since[1] if len(since) > 1 else "", "tracked": True})
                 continue
             past, skipped = past_secret(git, d, rel)  # a secret later swapped for a placeholder stays in earlier commits
             if skipped:
                 res["not_checked"].append("Secrets committed to git: `%s` has %d older revisions that were not opened (only the newest %d were), so a secret replaced long ago could be missed."
-                                          % (os.path.relpath(full, root), skipped, HISTORY_REVS_MAX))
+                                          % (safe_path(os.path.relpath(full, root)), skipped, HISTORY_REVS_MAX))
             if past:
-                res["findings"].append({"file": os.path.relpath(full, root), "keys": past[0], "since": past[1], "date": past[2],
+                res["findings"].append({"file": safe_path(os.path.relpath(full, root)), "keys": past[0], "since": past[1], "date": past[2],
                                         "tracked": True, "past": True})
         code, out = git_run(git, d, ["-c", "core.quotepath=off", "log", "--all", "--relative", "--format=@%h", "--name-only"], timeout=HISTORY_TIMEOUT)
         if code != 0:
@@ -991,7 +1003,7 @@ def scan_committed_secrets(root, inv):
                     break
         for rel in old:
             since = first_commit(git, d, rel)
-            res["findings"].append({"file": os.path.relpath(os.path.join(d, rel), root), "keys": [], "since": since[0],
+            res["findings"].append({"file": safe_path(os.path.relpath(os.path.join(d, rel), root)), "keys": [], "since": since[0],
                                     "date": since[1] if len(since) > 1 else "", "tracked": False})
     # shortcut: only the scanned folder and its projects are asked; a repo nested elsewhere with no lockfile is not seen
     return res

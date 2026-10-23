@@ -22,6 +22,6 @@ Input: the audit's high and critical findings for projects that have a deploy co
    - For `signs found` or `cannot tell` on a hole that runs code or reads files: list the secrets the app can reach BY NAME (env var names from the wrangler config, fly.toml or .env.example; never values) and say "rotate these".
    - For `signs found`, also say: "treat as an incident: stop, preserve evidence, get help".
 
-Commands you may run are read-only: `ls`, `find`, `ps`, `git log`, `git show --stat`, `grep`, and the host CLIs' non-log read commands (eg. `fly status`, `vercel ls`). Open no secret file to check a variable name: read names from `wrangler` config, `fly.toml` and `.env.example`.
+The checker has no shell (its tools are Read, Grep, Glob and WebFetch), so the limit is enforced, not just asked for. Indicator files: look with Glob/Read. The lockfile history and the process list come from the main session in the task; when one is missing, mark that part `unclear`. Open no secret file to check a variable name: read names from `wrangler` config, `fly.toml` and `.env.example`.
 
 Return one line per finding: `<project> · <package/advisory> · <verdict>`, then under it the reachable precondition, the window, the log source or "no logs", and the indicators checked. Report a check you could not run under "Could not check".

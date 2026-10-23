@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.5.1
+
+- The "Was I hit?" checker no longer has a shell: it can only read, search and open advisory pages, so "read-only" is enforced rather than asked for. The two commands it needs run in your main session, where you see them.
+- Reading git history of a scanned repo can never start a program from that repo's own git settings (signature, pager, external diff and ssh programs are overridden; file contents are read with text converters off).
+- File names from a scanned repo are cleaned (no backticks, line breaks or control characters) before they reach the report.
+- Old revisions of a secret file are size-checked before they are read, and the YAML key pattern no longer spans lines, so a crafted file stays fast.
+
 ## 1.5.0
 
 - New: **Was I hit?** After the audit, for each high or critical hole in a deployed project, stack-guard checks whether the hole was reachable in your code, how long it was open, what your host's logs show for that window (and says so when logs are off), and whether the traces an advisory lists are on your computer. Read-only; it names the secrets to rotate, never their values.
