@@ -5,7 +5,7 @@ description: Find what the user builds and runs (code projects, deploy configs, 
 
 # Stack audit (read-only)
 
-Goal: an honest list of what the user runs, what is vulnerable, and how exposed each thing is. This skill changes nothing and executes no freshly downloaded code: during a supply-chain attack, the audit tool itself must not become the way in.
+Goal: an honest list of what the user runs, what is vulnerable, and how exposed each thing is. This skill changes none of the user's code or packages and executes no freshly downloaded code: during a supply-chain attack, the audit tool itself must not become the way in.
 
 **Safe-tool rule for this skill:** use only tools already on the computer (`npm`, `pnpm`, `yarn`, `python`, `pip`, `git`, `curl`) and plain HTTPS requests to public databases. Use `npx`, `uvx`, `pipx run`, or any install only with an exact pinned version named below, and only when the step says so. Use a host CLI (`wrangler`, `fly`, `vercel`) only when it is already installed in the project (`node_modules/.bin/`) or on the PATH; never fetch one to run it.
 

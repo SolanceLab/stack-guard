@@ -1,0 +1,2 @@
+{"id":"GHSA-aaaa-bbbb-cccc","summary":"Prototype pollution in lodash","database_specific":{"severity":"HIGH"},
+"affected":[{"package":{"name":"lodash","ecosystem":"npm"},"ranges":[{"type":"SEMVER","events":[{"introduced":"0"},{"fixed":"4.17.21"}]}]}]}

@@ -1,0 +1,4 @@
+# pinned
+requests==2.25.0
+flask[async]==2.0.0 ; python_version>"3"
+unpinned>=1

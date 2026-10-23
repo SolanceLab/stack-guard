@@ -1,0 +1,1 @@
+{"name":"app","engines":{"node":">=18"},"dependencies":{"lodash":"4.17.20","@scope/pkg":"2.0.0"},"devDependencies":{"left-pad":"1.3.0"},"scripts":{"deploy":"wrangler deploy","pages":"wrangler pages deploy dist --project-name my-site"}}

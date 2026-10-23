@@ -22,7 +22,16 @@ codex plugin marketplace add SolanceLab/stack-guard
 codex plugin add stack-guard@stack-guard
 ```
 
-Start a new Codex conversation, then type `$stack-guard:run-stack-guard audit this folder`, or just ask: *"run stack-guard on this folder"* (add *"audit only"* to change nothing). Codex has no slash commands for plugins, so the `run-stack-guard` skill is the entry point; it does the same audit, news check and safe fixes.
+Start a new Codex conversation, then type `$stack-guard:run-stack-guard audit this folder`, or just ask: *"run stack-guard on this folder"* (add *"audit only"* to change none of your code or packages). Codex has no slash commands for plugins, so the `run-stack-guard` skill is the entry point; it does the same audit, news check and safe fixes.
+
+## Update
+
+Already installed an earlier version? Update, then restart your tool:
+
+- Claude Code (terminal): `claude plugin marketplace update stack-guard` then `claude plugin update stack-guard@stack-guard`
+- Codex: `codex plugin marketplace upgrade stack-guard` then `codex plugin add stack-guard@stack-guard`
+
+Using the daily watch? Run `/stack-guard:watch` once more after updating: the morning routine runs its own copy of the script (in `~/.config/stack-guard/bin/`, so an update can never break it silently), and this refreshes that copy. Each morning's run is logged in `~/.config/stack-guard/logs/`.
 
 ## Use
 
@@ -35,18 +44,29 @@ Open Claude Code in your project folder (or the folder that holds your projects)
 That is the whole thing. (If another plugin also has a `/stack-guard`, use `/stack-guard:stack-guard`.) Optional:
 
 - `/stack-guard ~/Projects/my-bot` checks one folder
-- `/stack-guard --audit-only` reports and changes nothing
+- `/stack-guard --audit-only` reports and changes none of your code or packages (it only writes its report into a `.stack-guard/` folder, which it adds to `.gitignore`)
 - `/stack-guard --yes` reports, then applies the safe package updates without asking again. Node/Python upgrades, service restarts, deploys and commits still get their own question.
 
 You can also just say: *"check my stack for security problems"*.
+
+**Two more commands:**
+
+- `/stack-guard:inventory` runs the script to write `STACK-INVENTORY.md`: a plain list of every project, where it's deployed, its runtime, package counts and MCP servers, with anything it couldn't place flagged at the top. Keep it (it describes your setup, so review it before committing it anywhere public). When the next security alert lands, you'll know in seconds whether it touches you.
+- `/stack-guard:watch` sets up a **daily routine on your own computer** (launchd on Mac, cron on Linux, Task Scheduler on Windows). It shows you the exact entry and asks before adding it. Each morning the script checks everything on the list, a **news scout agent** reads the last 14 days of security news for your versions, and an **explainer agent** writes what's new in plain words. You get **only what changed since yesterday**: a desktop notification, a report in `.stack-guard/reports/`, and optionally a Discord or Slack webhook. `/stack-guard:watch --off` removes it.
+
+## How it works: script + agents
+
+- **The script** (`scripts/stack_guard.py`, Python standard library only) does the exact, repeatable part: it lists every project, deploy config, runtime and MCP server, checks every package against [OSV.dev](https://osv.dev) and every runtime against [endoflife.date](https://endoflife.date), and compares with the last run. Same result every time, free to run every day.
+- **The agents** do the judgment: the news scout (web search only), the explainer (no tools), and in a conversation, the auditor and the fixer. They only get public package names and versions.
+- With no Python, the agents do everything by hand from the same instructions.
 
 ## Before you run it (please)
 
 Best practice for **any** plugin, this one included, even from people you trust: a plugin is instructions that run commands on your computer.
 
-1. **Read it.** stack-guard is plain text: one command, two skills, three agents, no code, no hooks, no MCP servers. After installing, see what it adds with `claude plugin details stack-guard`, and read the files in `~/.claude/plugins/cache/stack-guard/`.
+1. **Read it.** stack-guard is instructions in plain Markdown plus **one small Python script** (`scripts/stack_guard.py`, standard library only, no installs) — no hooks, no MCP servers. After installing, see what it adds with `claude plugin details stack-guard`, and read the files in `~/.claude/plugins/cache/stack-guard/`.
 2. **Commit or back up your project first**, so any change is easy to undo.
-3. **Look before you fix.** Start with `/stack-guard --audit-only`: it reports and changes nothing.
+3. **Look before you fix.** Start with `/stack-guard --audit-only`: it reports and changes none of your code or packages.
 4. **Turn on Claude Code's sandbox** (macOS, Linux, WSL2): type `/sandbox`. Commands can then only write inside your project folder, and every new website needs your OK. When asked, allow `registry.npmjs.org`, `api.osv.dev`, `endoflife.date` and `pypi.org`. The sandbox covers the commands Claude runs; Claude's own file edits still follow your normal permission prompts. Docs: https://code.claude.com/docs/en/sandboxing
 5. **Strongest:** run Claude Code inside a dev container or a virtual machine, with no SSH keys or cloud credentials mounted. Docs: https://code.claude.com/docs/en/devcontainer
 
@@ -65,12 +85,13 @@ Best practice for **any** plugin, this one included, even from people you trust:
 
 ## What leaves your computer
 
-- Package names and versions: to OSV.dev and to your package registry's audit service (`npm audit` sends your dependency list to the npm registry; private package names included).
+- Package names and versions: to OSV.dev, and in a conversation also to your package registry's audit service (`npm audit` sends your dependency list to the npm registry; private package names included).
 - Runtime names and versions: to endoflife.date.
-- Generic product names in web searches, for the news check.
-- When a host CLI (wrangler, fly) is installed and logged in, it talks to your own account on that host, as it always does.
+- Daily watch agents (when on): public package and runtime names and versions go to your own Claude Code or Codex account, and the news scout runs web searches with those generic names. Turn them off with `--no-agents`.
+- Webhook (only if you set one): a short summary of new findings (package names, versions, severities, counts) to the Discord or Slack channel you chose.
+- When a host CLI (wrangler, fly) is installed and logged in, the conversation may use it, and it talks to your own account on that host, as it always does.
 
-Your source code, keys and `.env` files are not sent anywhere, and stack-guard keeps tokens out of its report.
+Your source code, keys, `.env` files and file paths are not sent anywhere, and stack-guard keeps tokens out of its reports.
 
 ## Not covered yet
 

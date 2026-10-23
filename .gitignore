@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+__pycache__/
+*.pyc
+.stack-guard/
+SCRIPT-SPEC.md
+FIX-ROUND3.md

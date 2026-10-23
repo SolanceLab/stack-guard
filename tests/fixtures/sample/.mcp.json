@@ -1,0 +1,5 @@
+{"mcpServers":{
+"floating":{"command":"npx","args":["-y","some-mcp"],"env":{"API_KEY":"SECRET-VALUE-123"}},
+"latest":{"command":"npx","args":["-y","@scope/other@latest"]},
+"pinned":{"command":"uvx","args":["tool-mcp==1.2.3"],"env":{"TOKEN":"SECRET-VALUE-123"}},
+"plain":{"command":"/usr/bin/node","args":["server.js","--key","SECRET-VALUE-123"]}}}
