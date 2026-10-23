@@ -69,7 +69,7 @@ Best practice for **any** plugin, this one included, even from people you trust:
 1. **Read it.** stack-guard is instructions in plain Markdown plus **one small Python script** (`scripts/stack_guard.py`, standard library only, no installs) — one secret-guard hook (see Secret guard below), no MCP servers. After installing, see what it adds with `claude plugin details stack-guard`, and read the files in `~/.claude/plugins/cache/stack-guard/`.
 2. **Commit or back up your project first**, so any change is easy to undo.
 3. **Look before you fix.** Start with `/stack-guard --audit-only`: it reports and changes none of your code or packages.
-4. **Turn on Claude Code's sandbox** (macOS, Linux, WSL2): type `/sandbox`. Commands can then only write inside your project folder, and every new website needs your OK. When asked, allow `registry.npmjs.org`, `api.osv.dev`, `endoflife.date` and `pypi.org`. The sandbox covers the commands Claude runs; Claude's own file edits still follow your normal permission prompts. Docs: https://code.claude.com/docs/en/sandboxing
+4. **Turn on Claude Code's sandbox** (macOS, Linux, WSL2): type `/sandbox`. Commands can then only write inside your project folder, and every new website needs your OK. When asked, allow `registry.npmjs.org`, `api.osv.dev`, `endoflife.date`, `raw.githubusercontent.com` and `pypi.org`. The sandbox covers the commands Claude runs; Claude's own file edits still follow your normal permission prompts. Docs: https://code.claude.com/docs/en/sandboxing
 5. **Strongest:** run Claude Code inside a dev container or a virtual machine, with no SSH keys or cloud credentials mounted. Docs: https://code.claude.com/docs/en/devcontainer
 
 ## What it does
@@ -107,6 +107,7 @@ Prompted by a report from [@ayakohi](https://github.com/ayakohi).
 
 - Package names and versions: to OSV.dev (the daily watch never sends private npm names anywhere; they are counted, not listed), and in a conversation also to your package registry's audit service (`npm audit` sends your dependency list to the npm registry; private package names included).
 - Runtime names and versions: to endoflife.date.
+- Once a day, one request to raw.githubusercontent.com for this plugin's version number, to tell you when a newer stack-guard is out. Nothing about you or your projects is sent. Run `version-check` to see it.
 - Daily watch agents (when on): public package and runtime names and versions go to your own Claude Code or Codex account, and the news scout runs web searches with those generic names. The news scout agent is web-only and the explainer agent is tool-less (no file access, no shell) in both Claude and Codex. Turn them off with `--no-agents`.
 - Webhook (only if you set one): a short summary of new findings (package names, versions, severities, counts) to the Discord or Slack channel you chose.
 - When a host CLI (wrangler, fly) is installed and logged in, the conversation may use it, and it talks to your own account on that host, as it always does.

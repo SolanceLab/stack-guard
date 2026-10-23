@@ -37,6 +37,8 @@ class FakeNet:
         self.calls.append(url)
         if self.fail:
             raise OSError("offline")
+        if url == sg.LATEST_URL:
+            return {"plugins": [{"version": getattr(self, "latest", sg.VERSION)}]}
         if url == sg.OSV_BATCH:
             return {"results": [{"vulns": [{"id": i} for i in self.vulns.get(q["package"]["name"], [])]}
                                 for q in body["queries"]]}
@@ -1276,3 +1278,88 @@ class PersonaFreeAgents(Base):
         self.assertTrue(ok)
         self.assertEqual(seen["files"], ["auth.json"])
         self.assertNotEqual(os.path.realpath(seen["home"]), os.path.realpath(real))
+
+
+class UpdateNotice(Base):
+    def run_check(self, *extra):
+        self.run_main("check", self.folder, *extra)
+        with open(os.path.join(self.folder, ".stack-guard", "reports", self.date[0] + ".md"), encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_newer_in_report_json_and_notification(self):
+        sg.http_json.latest = "9.9.9"
+        md = self.run_check("--notify")
+        self.assertIn("stack-guard 9.9.9 is out (you have %s)" % sg.VERSION, md.split("## New since")[0])
+        with open(os.path.join(self.folder, ".stack-guard", "reports", self.date[0] + ".json"), encoding="utf-8") as fh:
+            self.assertIn("9.9.9", json.load(fh)["update"])
+        self.assertIn("9.9.9", sg.notify_desktop.call_args[0][1])
+        body = sg.notify_text({"update": "UPD", "date": "d", "not_checked": []}, {"first": True, "new": []})[1]
+        self.assertEqual(body.splitlines()[0], "UPD")
+
+    def test_same_or_older_says_nothing(self):
+        for v in (sg.VERSION, "0.0.1"):
+            sg.http_json.latest = v
+            os.path.exists(sg.config_dir("latest.json")) and os.remove(sg.config_dir("latest.json"))
+            self.assertNotIn("is out", self.run_check("--notify"))
+            self.assertIsNone(sg.update_line())
+
+    def test_fetch_error_does_not_block_check(self):
+        sg.http_json.fail = True
+        self.assertEqual(self.run_main("check", self.folder)[0] in (0, 2), True)
+        self.assertIsNone(sg.latest_version())
+        self.assertIn("Could not check", self.run_main("version-check")[1])
+
+    def test_failed_check_waits_an_hour_before_retrying(self):
+        sg.http_json.fail = True
+        self.assertIsNone(sg.latest_version())
+        sg.http_json.fail = False
+        sg.http_json.latest = "9.9.9"
+        self.assertIsNone(sg.latest_version())  # no second network wait right after a failure
+        path = sg.config_dir("latest.json")
+        with open(path, encoding="utf-8") as fh:
+            c = json.load(fh)
+        c["checked"] -= 2 * 3600
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(c, fh)
+        self.assertEqual(sg.latest_version(), "9.9.9")
+
+    def test_cache_honoured_for_24h(self):
+        sg.http_json.latest = "9.9.9"
+        self.assertEqual(sg.latest_version(), "9.9.9")
+        sg.http_json.latest = "9.9.10"
+        self.assertEqual(sg.latest_version(), "9.9.9")
+        path = sg.config_dir("latest.json")
+        with open(path, encoding="utf-8") as fh:
+            c = json.load(fh)
+        c["checked"] -= 25 * 3600
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(c, fh)
+        self.assertEqual(sg.latest_version(), "9.9.10")
+
+    def test_numeric_compare(self):
+        self.assertGreater(sg.vkey("1.3.10"), sg.vkey("1.3.9"))
+        sg.VERSION, old = "1.3.9", sg.VERSION
+        self.addCleanup(setattr, sg, "VERSION", old)
+        sg.http_json.latest = "1.3.10"
+        self.assertIn("1.3.10 is out", sg.update_line())
+
+    def test_prerelease_and_build_are_not_newer(self):
+        sg.VERSION, old = "1.3.4", sg.VERSION
+        self.addCleanup(setattr, sg, "VERSION", old)
+        for v in ("1.3.4-rc.1", "1.3.4+5", "1.3.3+5"):
+            sg.http_json.latest = v
+            os.path.exists(sg.config_dir("latest.json")) and os.remove(sg.config_dir("latest.json"))
+            self.assertIsNone(sg.update_line(), v)
+        sg.VERSION = "1.3.4-rc.1"
+        sg.http_json.latest = "1.3.4"
+        os.remove(sg.config_dir("latest.json"))
+        self.assertIn("1.3.4 is out", sg.update_line())
+
+    def test_short_update_line_fits(self):
+        sg.http_json.latest = "9.9.9"
+        self.assertLess(len(sg.update_line(short=True)), 120)
+
+    def test_update_line_is_ascii(self):
+        # stdout may be cp1252 (Windows watch log); a non-ASCII char would crash print
+        sg.http_json.latest = "9.9.9"
+        sg.update_line().encode("ascii")

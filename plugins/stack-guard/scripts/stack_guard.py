@@ -9,6 +9,7 @@ Python 3.9+, standard library only. Run:  python3 stack_guard.py <command> [fold
                          runtime support dates (endoflife.date); writes a dated report
   check --notify         also send a desktop notification (and a webhook if you set one)
   check --agents         also run a news-search agent and a plain-words explainer (your own claude or codex CLI)
+  version-check          say whether a newer stack-guard is out (asks GitHub once a day, sends nothing about you)
   webhook-set [folder]   read a Discord or Slack webhook address from stdin and keep it outside the project
   webhook-remove [folder]
   watch-install [folder] [--time HH:MM] [--yes]   show (or with --yes install) a daily check for that folder
@@ -44,11 +45,14 @@ except ImportError:  # shortcut: older Pythons list poetry.lock / uv.lock as "no
     tomllib = None
 
 TIMEOUT = 30
+LATEST_TIMEOUT = 10
 OSV_VULN = "https://api.osv.dev/v1/vulns/"
 BASE_PATH = ["/usr/bin", "/bin", "/usr/sbin", "/sbin"]
+LATEST_FAIL_TTL = 3600  # an offline check is retried after an hour, not on every run
 CAP_NOTE = "News search covered "
 SEV_ORDER = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1, "UNKNOWN": 0}
 REDACTED = "<redacted>"
+LATEST_TTL = 24 * 3600
 STATE_DIR = ".stack-guard"
 CACHE_DAYS = 7
 EOL_PRODUCTS = {"node": "nodejs", "python": "python"}
@@ -57,9 +61,10 @@ DEFAULT_TIME = "09:00"
 LABEL = "dev.stack-guard.watch"
 SECRET_WORD = re.compile(r"token|key|secret|password|auth", re.I)
 OSV_BATCH = "https://api.osv.dev/v1/querybatch"
-VERSION = "1.3.2"
+VERSION = "1.3.3"
 EOL_URL = "https://endoflife.date/api/%s.json"
 SKIP_DIRS = {"node_modules", "venv", "dist", "build", "worktrees", "__pycache__"}  # dot-folders are skipped too
+LATEST_URL = "https://raw.githubusercontent.com/SolanceLab/stack-guard/main/.claude-plugin/marketplace.json"
 AGENT_DENY = "Bash,Edit,Write,Read,Glob,Grep,Agent,Skill,NotebookEdit"
 NEWS_CAP = 80
 MAX_DEPTH = 6
@@ -178,6 +183,69 @@ def vkey(v):
 def first_version(text):
     m = re.search(r"(\d+\.\d+(?:\.\d+)?)", text or "")
     return m.group(1) if m else None
+
+
+# ---------------------------------------------------------------- update notice
+
+def latest_version():
+    """Newest published stack-guard version, or None on any error. Cached 24 h in the config folder.
+    Only LATEST_URL is contacted; nothing about the user is sent."""
+    cache = config_dir("latest.json")
+    try:
+        with open(cache, encoding="utf-8") as fh:
+            c = json.load(fh)
+        age = time.time() - float(c["checked"])
+        if c.get("version") is None and 0 <= age < LATEST_FAIL_TTL:
+            return None  # failed recently: do not wait on the network again
+        if age < LATEST_TTL and isinstance(c["version"], str) and valid_version(c["version"]):
+            return c["version"]
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    v = None
+    try:
+        got = str(http_json(LATEST_URL, timeout=LATEST_TIMEOUT)["plugins"][0]["version"])
+        v = got if valid_version(got) else None
+    except Exception:  # never blocks the check
+        pass
+    try:
+        os.makedirs(os.path.dirname(cache), exist_ok=True)
+        write_file(cache, json.dumps({"checked": time.time(), "version": v}))
+    except Exception:
+        pass
+    return v
+
+
+def release_key(v):
+    """Release numbers only: 1.3.4-rc.1 sorts below 1.3.4, 1.3.3+5 equals 1.3.3."""
+    m = re.match(r"\s*v?(\d+(?:\.\d+)*)(.*)", str(v))
+    if not m:
+        return ((), 0)
+    nums = [int(x) for x in m.group(1).split(".")]
+    while nums and nums[-1] == 0:
+        nums.pop()
+    return (tuple(nums), 0 if m.group(2).startswith("-") else 1)
+
+
+def update_line(short=False):
+    """One line when a newer version is out, else None. short: the form for notifications and webhooks."""
+    new = latest_version()
+    if not new or release_key(new) <= release_key(VERSION):
+        return None
+    if short:
+        return "stack-guard %s is out (you have %s). Run: claude plugin update stack-guard@stack-guard" % (new, VERSION)
+    return ("stack-guard %s is out (you have %s). Claude Code: `claude plugin update stack-guard@stack-guard` then restart, "
+            "or turn on auto-update in /plugin > Marketplaces. Codex: `codex plugin marketplace upgrade stack-guard` then "
+            "`codex plugin add stack-guard@stack-guard`. Using the daily watch? Run /stack-guard:watch again afterwards "
+            "so it picks up the new script." % (new, VERSION))
+
+
+def cmd_version_check():
+    new = latest_version()
+    if new is None:
+        print("Could not check for a newer stack-guard (offline?)")
+    else:
+        print(update_line() or "stack-guard %s is up to date" % VERSION)
+    return 0
 
 
 VERSION_RE = re.compile(r"^[0-9A-Za-z.+_!-]{1,64}$")
@@ -1061,7 +1129,10 @@ def render_report(rep, diff):
     red = [f for f in rep["findings"] if f["severity"] in ("HIGH", "CRITICAL") and f["deploy"] and not f["dev"]]
     red_keys = {f["key"] for f in red}
     rest = [f for f in rep["findings"] if f["key"] not in red_keys]
-    L = ["# Stack Guard check, %s" % rep["date"], "", "Folder: `%s`" % rep["folder"], "", "## New since last check", ""]
+    L = ["# Stack Guard check, %s" % rep["date"], ""]
+    if rep.get("update"):
+        L += [rep["update"], ""]
+    L += ["Folder: `%s`" % rep["folder"], "", "## New since last check", ""]
     L += diff_lines(diff, True)
     L += ["", "## 🔴 Fix first", "", "High or critical problems in live packages of a project that has a deploy config.", ""]
     L += group_findings(red) or ["None."]
@@ -1104,7 +1175,7 @@ def notify_text(rep, diff, prev=None, hidden=frozenset()):
         head += "%d new, %d fixed, %d runtime, %d MCP" % (len(diff["new"]), len(diff["fixed"]), len(diff["runtimes"]), len(diff["mcp"]))
     if rep["not_checked"]:
         head += "; some things were not checked"
-    lines = [head] + ["- " + x["text"] for x in diff["new"] if x.get("key") not in hidden][:9]
+    lines = ([rep.get("update_short") or rep["update"]] if rep.get("update") else []) + [head] + ["- " + x["text"] for x in diff["new"] if x.get("key") not in hidden][:9]
     for title, key in (("News", "news"), ("Meaning", "explain")):
         if prev is not None and str(rep.get(key) or "").strip() == str(prev.get(key) or "").strip():
             continue  # same text as the last report: already sent once
@@ -1366,6 +1437,10 @@ def cmd_check(folder, notify, agents=False):
     findings = osv_check(collect_targets(inv, skipped), state_dir(folder, "cache"), errors)
     eol_check(inv["runtimes"], errors)
     rep = make_report(inv, findings, errors, findings is not None, skipped)
+    upd = update_line()
+    if upd:
+        rep["update"] = upd
+        rep["update_short"] = update_line(short=True)
     reports = state_dir(folder, "reports")
     prev, problem = newest_earlier_report(reports, rep["date"])
     today_saved = read_json_file(os.path.join(reports, rep["date"] + ".json"))  # same-day rerun: what was already sent
@@ -1378,6 +1453,8 @@ def cmd_check(folder, notify, agents=False):
     sev = [f for f in rep["findings"] if f["severity"] in ("HIGH", "CRITICAL")]
     print("Stack Guard check %s: %d known problems (%d high or critical)." % (rep["date"], len(rep["findings"]), len(sev)))
     print("Report: %s/reports/%s.md" % (STATE_DIR, rep["date"]))
+    if rep.get("update"):
+        print(rep["update"])
     print("New since last check:")
     print("\n".join(diff_lines(diff, False)))
     for n in rep["not_checked"]:
@@ -1385,7 +1462,7 @@ def cmd_check(folder, notify, agents=False):
     if notify:
         hidden = frozenset(f["key"] for f in rep["findings"] if not shareable(f, inv))
         title, body = notify_text(rep, diff, today_saved or prev, hidden)
-        notify_desktop("Stack Guard", title, os.path.abspath(folder))
+        notify_desktop("Stack Guard", ((rep.get("update_short") or rep["update"]) + "\n" + title) if rep.get("update") else title, os.path.abspath(folder))
         status = send_webhook(folder, body)
         if status:
             print(status)
@@ -1712,6 +1789,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="stack_guard.py", description="Inventory and check what your projects run on.")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("inventory").add_argument("folder", nargs="?", default=".")
+    sub.add_parser("version-check")
     c = sub.add_parser("check")
     c.add_argument("folder", nargs="?", default=".")
     c.add_argument("--notify", action="store_true")
@@ -1732,6 +1810,8 @@ def main(argv=None):
         print("Folder not found: %s" % a.folder)
         return 1
     try:
+        if a.cmd == "version-check":
+            return cmd_version_check()
         if a.cmd == "inventory":
             return cmd_inventory(a.folder)
         if a.cmd == "check":
