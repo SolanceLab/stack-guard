@@ -482,8 +482,6 @@ class DeployRuntimeAndVersion(unittest.TestCase):
             self.assertNotIn("1.4.0", text)
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 class WindowsPythonInHooks(unittest.TestCase):
@@ -511,3 +509,6 @@ class WindowsPythonInHooks(unittest.TestCase):
             self.assertNotIn("python3 \"", c.replace('"$PY"', ""), c)
             self.assertEqual(self.run_with(c, "Windows_NT", ["python", "python3"]), ["python"], c)
             self.assertEqual(self.run_with(c, None, ["python", "python3"]), ["python3"], c)
+
+if __name__ == "__main__":
+    unittest.main()
