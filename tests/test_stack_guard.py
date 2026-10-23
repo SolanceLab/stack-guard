@@ -918,7 +918,7 @@ class Round5Fixes(Base):
         def run(args, input_text=None, timeout=30, cwd=None, stderr_out=None):
             if list(args[1:]) == ["-l"]:
                 if stderr_out is not None:
-                    stderr_out.append("no crontab for anne")
+                    stderr_out.append("no crontab for user")
                 return 1, ""
             sent.append(input_text)
             return 0, ""
