@@ -3,13 +3,13 @@
   "owner": { "name": "SolanceLab" },
   "metadata": {
     "description": "One-prompt security check and safe fix for everything you build and run with Claude Code.",
-    "version": "1.2.0"
+    "version": "1.2.1"
   },
   "plugins": [
     {
       "name": "stack-guard",
       "description": "Find what you actually run, check every package and runtime for known security holes, explain it in plain words, and apply the safe fixes after your yes.",
-      "version": "1.2.0",
+      "version": "1.2.1",
       "author": { "name": "SolanceLab" },
       "category": "security",
       "source": "./plugins/stack-guard"
