@@ -9,15 +9,13 @@ import re
 import shlex
 import sys
 
+PATH_PARTS = ["/.docker/config.json", "/.kube/config", "/.codex/auth.json", "/.config/gcloud/"]
 EXEMPT = {".env.example", ".env.sample", ".env.template", ".env.dist"}
 NAME_GLOBS = [".env", ".env.*", ".dev.vars", ".npmrc", ".pypirc", ".netrc", ".pgpass",
               "secrets.yaml", "secrets.yml", "secrets.json", "secrets.toml",
               "*.pem", "*.key", "*.p12", "*.pfx", "id_rsa*", "id_ed25519*", "id_ecdsa*",
               "credentials", "credentials.json", "*service-account*.json",
               ".claude.json", "claude_desktop_config.json"]
-PATH_PARTS = ["/.docker/config.json", "/.kube/config", "/.codex/auth.json", "/.config/gcloud/"]
-READERS = {"cat", "head", "tail", "less", "more", "bat", "grep", "rg", "ag", "sed", "awk", "cut",
-           "strings", "xxd", "od", "hexdump", "base64", "jq", "yq"}
 SCRIPTERS = {"python", "python3", "node"}
 SECRET_SHAPES = [
     ("GitHub token", r"(?:ghp_|gho_|ghs_|github_pat_)[A-Za-z0-9_]{20,}"),
@@ -30,6 +28,8 @@ SECRET_SHAPES = [
     ("Discord bot token", r"[MN][A-Za-z\d]{23}\.[\w-]{6}\.[\w-]{27}"),
     ("password in a URL", r"https?://[^/\s:@]+:[^/\s@]+@"),
 ]
+READERS = {"cat", "head", "tail", "less", "more", "bat", "grep", "rg", "ag", "sed", "awk", "cut",
+           "strings", "xxd", "od", "hexdump", "base64", "jq", "yq"}
 
 
 def is_secret_path(p):
@@ -42,12 +42,12 @@ def is_secret_path(p):
     return any(fnmatch.fnmatchcase(name, g) for g in NAME_GLOBS)
 
 
-PRINTERS = READERS | SCRIPTERS | {"echo", "printf", "print", "tee", "yes", "cp", "dd", "ruby", "perl"}
 SECRET_VAR = re.compile(r"\$\{?[A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY|PRIVATE_?KEY|CREDENTIAL)[A-Za-z0-9_]*",
                         re.I)
-SECRET_ENV_NAME = re.compile(r"(?:TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY|PRIVATE_?KEY|CREDENTIAL)", re.I)
+PRINTERS = READERS | SCRIPTERS | {"echo", "printf", "print", "tee", "yes", "cp", "dd", "ruby", "perl"}
 SUBST = re.compile(r"\$\([^()]*\)|`[^`]*`")
 HOLE = re.compile(r"__SUBST(\d+)__")
+SECRET_ENV_NAME = re.compile(r"(?:TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY|PRIVATE_?KEY|CREDENTIAL)", re.I)
 
 
 def hoist_substitutions(cmd, bodies):
@@ -146,12 +146,12 @@ def wrapped_command(head, seg):
 
 
 # Paths that write to the chat: /dev/stdout, /dev/stderr, /dev/tty, /dev/fd/N, /proc/self/fd/N, /proc/<pid>/fd/N.
-OUTPUT_ALIAS = re.compile(r"/dev/(?:stdout|stderr|tty)|/dev/fd/\d+|/proc/(?:self|\d+|thread-self)/fd/\d+")
 OK_HEADS = {"cp", "mv", "rm", "chmod", "touch", "ls", "stat", "test", "[", "[[", "source", "."}
 KEYWORDS = {"if", "then", "else", "elif", "while", "until", "do", "!", "{", "(", ")", "time", "&&", "||"}
+IN_PLACE = re.compile(r"^-(?!-)[a-zA-Z]*i|^--in-place")
+OUTPUT_ALIAS = re.compile(r"/dev/(?:stdout|stderr|tty)|/dev/fd/\d+|/proc/(?:self|\d+|thread-self)/fd/\d+")
 WRITE_REDIRECTS = {">", ">>", ">|", "&>", "&>>"}
 MENTION_SPLIT = re.compile(r"[^\s'\"(),=:;@]+")
-IN_PLACE = re.compile(r"^-(?!-)[a-zA-Z]*i|^--in-place")
 
 
 def secret_mention(tok):
@@ -356,12 +356,12 @@ def stop(data):
             return
 
 
-COMMAND_TAG = re.compile(r"<command-name>\s*/?([^<\s]*)")
+SCRIPT_TOKEN = re.compile(r"(?:.*/)?stack_guard\.py")
 OWN_SKILLS = ("run-stack-guard", "stack-audit", "stack-fix")
 OWN_AGENTS = ("stack-auditor", "stack-fixer", "stack-news-scout")
-HEREDOC = re.compile(r"<<-?\s*(['\"]?)(\w+)\1")
-SCRIPT_TOKEN = re.compile(r"(?:.*/)?stack_guard\.py")
 INTERPRETER = re.compile(r"python[\d.]*")
+COMMAND_TAG = re.compile(r"<command-name>\s*/?([^<\s]*)")
+HEREDOC = re.compile(r"<<-?\s*(['\"]?)(\w+)\1")
 
 
 def without_heredoc_bodies(cmd):

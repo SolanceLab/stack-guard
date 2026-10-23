@@ -77,7 +77,7 @@ class PreToolUse(unittest.TestCase):
         self.allowed("Bash", command="grep -n TOKEN src/app.ts")
 
     def test_script_opening_secret_without_printing_allowed(self):
-        # round 2: any script that names a secret file is blocked (Anne: close the interpreter bypasses)
+        # round 2: any script that names a secret file is blocked (closes the interpreter bypasses)
         self.blocked("Bash", command="python3 -c \"import os; k=open('.env').read(); os.system('true')\"")
         self.blocked("Bash", command="node -e \"console.log(require('fs').readFileSync('.env','utf8'))\"")
 

@@ -1230,7 +1230,7 @@ class PrefixFolders(Base):
 
 
 class NoSecretsInOutput(Base):
-    """23 Oct: an AI printed a user's Home Assistant token while reading an MCP config. The script must never write one."""
+    """An MCP config's tokens must never reach any file the script writes."""
 
     def test_mcp_tokens_never_reach_inventory_or_report(self):
         token = "FAKE-HA-TOKEN-eyJhbGciOiJIUzI1NiJ9.SECRETPART"
