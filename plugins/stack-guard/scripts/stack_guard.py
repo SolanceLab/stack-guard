@@ -280,8 +280,8 @@ def npm_provably_public(name, resolved):
     return not name.startswith("@") or name.split("/", 1)[0] in PUBLIC_NPM_SCOPES
 
 
-INDEX_FLAG = re.compile(r"^\s*(--index-url|--extra-index-url|-i)(\s|=|$)", re.I)
-INDEX_ENV = re.compile(r"^\s*(?:export\s+)?(?:PIP|UV)_(?:EXTRA_)?INDEX_URL\s*=", re.M)
+INDEX_FLAG = re.compile(r"^\s*(--index-url|--extra-index-url|-i|--find-links|-f|--no-index)(\s|=|$)", re.I)
+INDEX_ENV = re.compile(r"^\s*(?:export\s+)?(?:(?:PIP|UV)_(?:EXTRA_)?INDEX_URL|PIP_FIND_LINKS|UV_FIND_LINKS|PIP_NO_INDEX)\s*=", re.M)
 
 
 def norm_py(name):
@@ -323,8 +323,8 @@ def parse_pyproject(path, proj):
     """Direct production dependency names and any private-index setting. Without tomllib (Python < 3.11) the
     text is only searched for index sections and the dependency names are not read."""
     text = read_text(path)
-    if re.search(r"^\s*\[\[?tool\.(poetry\.source|uv\.index)\]\]?\s*$", text, re.M) \
-            or re.search(r"^\s*(index-url|extra-index-url)\s*=", text, re.M):
+    if re.search(r"^\s*\[\[?tool\.(poetry\.source|uv\.index|pdm\.source)\]\]?\s*$", text, re.M) \
+            or re.search(r"^\s*(index-url|extra-index-url|find-links)\s*=", text, re.M):
         proj["private_index"] = True
     if tomllib is None:
         return
@@ -381,8 +381,13 @@ def parse_pipfile_lock(path, label, proj, inv):
     data = load_json(path, inv, label)
     if not isinstance(data, dict):
         return
+    sources = ((data.get("_meta") or {}).get("sources") or []) if isinstance(data.get("_meta"), dict) else []
+    if any(not str((src or {}).get("url", "")).startswith("https://pypi.org/") for src in sources if isinstance(src, dict)):
+        proj["private_index"] = True  # a non-PyPI source in the lockfile: no Python name here is provably public
     for section, dev in (("default", False), ("develop", True)):
         for name, info in (data.get(section) or {}).items():
+            if isinstance(info, dict) and info.get("index") and str(info.get("index")) != "pypi":
+                proj["private_py"].append(norm_py(name))
             v = str((info or {}).get("version", "")).lstrip("=")
             if isinstance(info, dict) and any(k in info for k in ("git", "path", "file", "ref", "editable")):
                 proj["private_py"].append(norm_py(name))
@@ -1558,10 +1563,17 @@ def remove_legacy(plat, root):
     """Remove the v1 schedule (one global entry named LABEL, before schedules got a folder hash), so an upgrade
     never leaves two daily runs. Returns True when one was found and removed, None when there was none,
     False when one was found but could not be removed.
-    shortcut: a v1 entry is dropped even if it watched another folder; rerun watch-install there to bring it back."""
+    An older entry that watches a DIFFERENT folder is left alone (None), so another project's daily check keeps running."""
     if plat == "darwin":
         path = os.path.join(home_dir(), "Library", "LaunchAgents", LABEL + ".plist")
         if not os.path.exists(path):
+            return None
+        try:
+            with open(path, "rb") as f:
+                args = plistlib.load(f).get("ProgramArguments") or []
+        except (OSError, ValueError, plistlib.InvalidFileException):
+            return None
+        if not args or os.path.realpath(str(args[-1])) != os.path.realpath(root):
             return None
         uid = getattr(os, "getuid", lambda: 501)()
         if not launchd_unload("gui/%d/%s" % (uid, LABEL), root):
@@ -1570,13 +1582,16 @@ def remove_legacy(plat, root):
         os.remove(path)
         return True
     if plat == "windows":
-        if run_system_tool(["schtasks", "/Query", "/TN", LABEL], root)[0] != 0:
+        code, out = run_system_tool(["schtasks", "/Query", "/TN", LABEL, "/V", "/FO", "LIST"], root)
+        if code != 0 or os.path.normcase(root) not in os.path.normcase(out):
             return None
         return run_system_tool(["schtasks", "/Delete", "/TN", LABEL, "/F"], root)[0] == 0
     code, current = run_system_tool(["crontab", "-l"], root)
-    if code != 0 or not any(x.rstrip().endswith("# " + LABEL) for x in current.splitlines()):
+    def mine(x):
+        return x.rstrip().endswith("# " + LABEL) and shlex.quote(root) in x
+    if code != 0 or not any(mine(x) for x in current.splitlines()):
         return None
-    return edit_crontab(None, root, lambda x: x.rstrip().endswith("# " + LABEL))
+    return edit_crontab(None, root, mine)
 
 
 def cmd_watch_install(folder, hhmm, yes, agents=True):
@@ -1639,10 +1654,11 @@ def stack_guard_entries(plat, root):
         code, current = run_system_tool(["crontab", "-l"], root, stderr_out=err)
         if code != 0 and "no crontab for" not in (err[0] if err else ""):
             raise ValueError("Could not read your crontab. Nothing was changed.")
-        marks = [x for x in current.splitlines() if CRON_MARK in x or x.rstrip().endswith("# " + LABEL)] if code == 0 else []
+        ours = re.compile(r"(# stack-guard watch [0-9a-f]{12}|# " + re.escape(LABEL) + r")\s*$")
+        marks = [x for x in current.splitlines() if ours.search(x)] if code == 0 else []
         if marks:
             found.append(("%d crontab line(s)" % len(marks),
-                          lambda: edit_crontab(None, root, lambda x: CRON_MARK in x or x.rstrip().endswith("# " + LABEL))))
+                          lambda: edit_crontab(None, root, lambda x: bool(ours.search(x)))))
     return found
 
 

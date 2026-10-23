@@ -2,6 +2,8 @@
 import io
 import json
 import os
+import plistlib
+import shlex
 import shutil
 import stat
 import sys
@@ -947,7 +949,8 @@ class Round5Fixes(Base):
         agents = os.path.join(self.home, "Library", "LaunchAgents")
         os.makedirs(agents, exist_ok=True)
         legacy = os.path.join(agents, "dev.stack-guard.watch.plist")
-        open(legacy, "w").close()
+        with open(legacy, "wb") as f:
+            plistlib.dump({"Label": "dev.stack-guard.watch", "ProgramArguments": ["/usr/bin/python3", "/x/stack_guard.py", "check", "--notify", os.path.abspath(self.folder)]}, f)
         with mock.patch.object(sg, "run_cmd", lambda a, **k: (0, "")):
             code, out = self.run_main("watch-install", self.folder, "--yes")
         self.assertEqual(code, 0)
@@ -959,7 +962,7 @@ class Round5Fixes(Base):
 
         def run(args, input_text=None, timeout=30, cwd=None, stderr_out=None):
             if list(args[1:]) == ["-l"]:
-                return 0, "0 1 * * * keep\n5 8 * * * old # dev.stack-guard.watch"
+                return 0, "0 1 * * * keep\n5 8 * * * old %s # dev.stack-guard.watch" % shlex.quote(os.path.abspath(self.folder))
             sent.append(input_text)
             return 0, ""
         with mock.patch.object(sg, "platform_name", lambda: "linux"), mock.patch.object(sg, "run_cmd", run):
@@ -975,7 +978,7 @@ class Round5Fixes(Base):
         def run(args, input_text=None, timeout=30, cwd=None, stderr_out=None):
             calls.append(list(args[1:3]) + ([args[args.index("/TN") + 1]] if "/TN" in args else []))
             if "/FO" in args:
-                return 0, '"\\dev.stack-guard.watch","08:00","Ready"\n'
+                return 0, '"\\dev.stack-guard.watch","08:00","Ready"\nTask To Run: py stack_guard.py check %s\n' % os.path.abspath(self.folder)
             return 0, ""
         with mock.patch.object(sg, "platform_name", lambda: "windows"), mock.patch.object(sg, "run_cmd", run):
             self.run_main("watch-install", self.folder, "--yes")
@@ -1150,3 +1153,40 @@ class Round5HandFixes(Base):
         self.assertEqual(code, 1)
         self.assertIn("could not be removed", err.getvalue())
         self.assertNotIn("Installed.\n", out.getvalue())
+
+
+class ReleaseGateFixes(Base):
+    """Final release gate (23 Oct 12:16): never touch another folder's schedule or unrelated cron lines."""
+
+    def test_legacy_schedule_for_another_folder_is_kept(self):
+        agents = os.path.join(self.home, "Library", "LaunchAgents")
+        os.makedirs(agents, exist_ok=True)
+        legacy = os.path.join(agents, "dev.stack-guard.watch.plist")
+        with open(legacy, "wb") as f:
+            plistlib.dump({"Label": "dev.stack-guard.watch", "ProgramArguments": ["/usr/bin/python3", "/x/stack_guard.py", "check", "/somewhere/else"]}, f)
+        with mock.patch.object(sg, "platform_name", lambda: "darwin"), mock.patch.object(sg, "run_cmd", lambda a, **k: (0, "")):
+            code, _ = self.run_main("watch-install", self.folder, "--yes")
+        self.assertEqual(code, 0)
+        self.assertTrue(os.path.exists(legacy))
+
+    def test_remove_all_keeps_unrelated_cron_lines(self):
+        sent = []
+
+        def run(args, input_text=None, timeout=30, cwd=None, stderr_out=None):
+            if list(args[1:]) == ["-l"]:
+                return 0, ("0 1 * * * echo '# stack-guard watch notes' >> /tmp/x\n"
+                           "2 2 * * * b # stack-guard watch bbbbbbbbbbbb")
+            sent.append(input_text)
+            return 0, ""
+        with mock.patch.object(sg, "platform_name", lambda: "linux"), mock.patch.object(sg, "run_cmd", run):
+            self.run_main("watch-remove", "--all")
+        self.assertTrue(sent)
+        self.assertIn("stack-guard watch notes", sent[-1])
+        self.assertNotIn("bbbbbbbbbbbb", sent[-1])
+
+    def test_private_python_index_detection(self):
+        proj = sg.new_project(".") if hasattr(sg, "new_project") else None
+        for line in ("--find-links https://x/simple", "-f ./wheels", "--no-index"):
+            self.assertTrue(sg.INDEX_FLAG.match(line), line)
+        for env in ("PIP_FIND_LINKS=x", "UV_FIND_LINKS=x", "PIP_NO_INDEX=1"):
+            self.assertTrue(sg.INDEX_ENV.search(env), env)
