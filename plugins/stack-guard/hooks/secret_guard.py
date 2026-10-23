@@ -513,7 +513,15 @@ def stack_guard_in_use(data):
         return False
 
 
+def option_off(name):
+    """True when the plugin setting `name` is false/0/no/off (env CLAUDE_PLUGIN_OPTION_<NAME>, any case)."""
+    return os.environ.get("CLAUDE_PLUGIN_OPTION_" + name.upper(), "").strip().lower() in ("false", "0", "no", "off")
+
+
 def main():
+    # First thing: a turned-off hook exits before it reads stdin or any transcript.
+    if option_off("secret_guard") or ("--stop" in sys.argv and option_off("reply_check")):
+        return
     try:
         data = json.load(sys.stdin)
         if not stack_guard_in_use(data):

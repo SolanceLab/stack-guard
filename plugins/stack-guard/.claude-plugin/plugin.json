@@ -1,8 +1,42 @@
 {
   "name": "stack-guard",
-  "version": "1.5.3",
+  "version": "1.5.4",
   "description": "One-prompt security check and safe fix for everything you build and run with Claude Code.",
-  "author": { "name": "SolanceLab" },
+  "author": {
+    "name": "SolanceLab"
+  },
   "license": "MIT",
-  "keywords": ["security", "dependencies", "audit", "npm", "python", "cloudflare", "fly", "mcp"]
+  "keywords": [
+    "security",
+    "dependencies",
+    "audit",
+    "npm",
+    "python",
+    "cloudflare",
+    "fly",
+    "mcp"
+  ],
+  "userConfig": {
+    "secret_guard": {
+      "type": "boolean",
+      "title": "Secret guard",
+      "description": "Keeps secret files and keys out of the chat while stack-guard is in use (all three secret-guard hooks).",
+      "default": true,
+      "required": false
+    },
+    "reply_check": {
+      "type": "boolean",
+      "title": "Final-reply check",
+      "description": "After each reply, checks it for secret shapes. To do that it reads the session's history on this computer; nothing leaves the computer. Turning it off keeps the other two secret-guard hooks.",
+      "default": true,
+      "required": false
+    },
+    "update_check": {
+      "type": "boolean",
+      "title": "Update check",
+      "description": "Once a day asks GitHub for stack-guard's version number (never code) at session start, at the start of /stack-guard and in the daily watch.",
+      "default": true,
+      "required": false
+    }
+  }
 }

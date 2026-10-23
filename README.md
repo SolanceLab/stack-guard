@@ -105,6 +105,18 @@ Each finding ends in one verdict: `not reachable`, `reachable, no signs found`, 
 
 The daily watch does not run these checks (no agent works unattended). It adds one line to its report when there are new high or critical live findings: "Run /stack-guard to check whether these were used against you."
 
+## Settings
+
+Three settings, all on by default. Change them when you install (`/plugin`), later with `/plugin configure stack-guard@stack-guard` or `/config`, or from a terminal install: `claude plugin install stack-guard@stack-guard --config reply_check=false`.
+
+| Setting | What turning it off means |
+| --- | --- |
+| `secret_guard` ("Secret guard") | All three secret-guard hooks stop before they read anything. Nothing is blocked or redacted. |
+| `reply_check` ("Final-reply check") | Only the Stop hook stops. It is the one that reads the session's history on this computer (nothing leaves the computer) to check each reply for secret shapes. The other two secret-guard hooks keep working. |
+| `update_check` ("Update check") | No daily request to GitHub for the version number: not at session start, not in `/stack-guard`, not in the daily watch. `version-check` says "Update check is turned off." |
+
+`PLUGIN_UPDATE_CHECK=0` still turns the update check off too.
+
 ## Secret guard
 
 Your agents can still work with secrets: use them, rotate them, set them. During a stack-guard run, the guard only stops a secret's value from being printed into the chat.
@@ -117,7 +129,7 @@ Three layers:
 2. **Redacts tool output.** After `Bash`, `Read` and `Grep` run, a PostToolUse hook scans the result for secret shapes and swaps each one for `[REDACTED ...]` before Claude sees it, then tells Claude to have you rotate (replace) the secret.
 3. **Catches and warns after replying.** When Claude finishes, a Stop hook scans its last reply for secret shapes (GitHub, OpenAI/Anthropic, Slack, AWS and Google keys, JWTs, private keys, Discord bot tokens, passwords inside URLs). On a hit, Claude is told to say so in one line and to have you rotate (replace) the secret. The secret itself is never repeated.
 
-It is a seatbelt, not a vault: it catches the common ways a secret gets printed, not every possible one. To turn it off, run `/plugin disable stack-guard` or remove the plugin.
+It is a seatbelt, not a vault: it catches the common ways a secret gets printed, not every possible one. To turn off all of it, or only the final-reply check, see [Settings](#settings). To remove it entirely, run `/plugin disable stack-guard` or remove the plugin.
 
 **Claude Code only;** in Codex, the written secrets rule in every stack-guard instruction applies.
 
@@ -127,7 +139,7 @@ Thanks to Aya ([@ayakohi](https://github.com/ayakohi)), whose question started i
 
 - Package names and versions: to OSV.dev (the daily watch never sends private npm names anywhere; they are counted, not listed), and in a conversation also to your package registry's audit service (`npm audit` sends your dependency list to the npm registry; private package names included).
 - Runtime names and versions: to endoflife.date.
-- Once a day, one request to raw.githubusercontent.com for this plugin's version number, to tell you when a newer stack-guard is out: at the start of a Claude Code session (one line in your terminal), in `/stack-guard`, and in the daily watch. Nothing about you or your projects is sent. Turn the session-start check off with the environment variable `PLUGIN_UPDATE_CHECK=0`.
+- Once a day, one request to raw.githubusercontent.com for this plugin's version number, to tell you when a newer stack-guard is out: at the start of a Claude Code session (one line in your terminal), in `/stack-guard`, and in the daily watch. Nothing about you or your projects is sent. Turn it off with the `update_check` setting (see [Settings](#settings)) or the environment variable `PLUGIN_UPDATE_CHECK=0`.
 - Daily watch agents (when on): public package and runtime names and versions go to your own Claude Code or Codex account, and the news scout runs web searches with those generic names. The news scout agent is web-only and the explainer agent is tool-less (no file access, no shell) in both Claude and Codex. Turn them off with `--no-agents`.
 - Webhook (only if you set one): a short summary of new findings (package names, versions, severities, counts) to the Discord or Slack channel you chose.
 - "Was I hit?": the breach checker fetches advisory pages (public URLs only). It sends no project data to them.

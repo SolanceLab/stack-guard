@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.5.4
+
+- Settings: turn off the secret guard, only its final-reply check, or the update check, when you install or later with `/plugin configure stack-guard@stack-guard`. When off, that hook stops before reading anything and nothing is fetched. Prompted by Ajax Vale's review, with Shaz ([@ajxvale](https://github.com/ajxvale)), together with the Windows fix in 1.5.3.
+
 ## 1.5.3
 
 - Windows: the hooks and the daily watch use `python` there, as the script already did. `python3` on Windows is often a Microsoft Store shortcut or a different Python. Reported by Ajax Vale, with Shaz ([@ajxvale](https://github.com/ajxvale)).

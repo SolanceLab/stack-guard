@@ -63,7 +63,7 @@ DEFAULT_TIME = "09:00"
 LABEL = "dev.stack-guard.watch"
 SECRET_WORD = re.compile(r"token|key|secret|password|auth", re.I)
 OSV_BATCH = "https://api.osv.dev/v1/querybatch"
-VERSION = "1.5.3"
+VERSION = "1.5.4"
 EOL_URL = "https://endoflife.date/api/%s.json"
 SKIP_DIRS = {"node_modules", "venv", "dist", "build", "worktrees", "__pycache__"}  # dot-folders are skipped too
 LATEST_URL = "https://raw.githubusercontent.com/SolanceLab/stack-guard/main/.claude-plugin/marketplace.json"
@@ -189,9 +189,45 @@ def first_version(text):
 
 # ---------------------------------------------------------------- update notice
 
+OFF_WORDS = ("false", "0", "no", "off")
+
+
+def option_off(name, env=None):
+    """True when the plugin setting `name` was turned off: env CLAUDE_PLUGIN_OPTION_<NAME> is false/0/no/off (any case)."""
+    v = (env if env is not None else os.environ).get("CLAUDE_PLUGIN_OPTION_" + name.upper())
+    return v is not None and str(v).strip().lower() in OFF_WORDS
+
+
+def saved_option_off(name):
+    """True when the user's saved plugin setting says off. Reads only options.<name> of the stack-guard@* entries in
+    the user settings file, and nothing else in it. Missing or unreadable means on.
+    shortcut: user settings only. Claude Code ignores pluginConfigs in project and local files (a cloned repo must not
+    supply them), so this does too; add them here if the docs ever change."""
+    base = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(home_dir(), ".claude")
+    try:
+        with open(os.path.join(base, "settings.json"), encoding="utf-8") as fh:
+            configs = json.load(fh).get("pluginConfigs")
+        off = False
+        for key in sorted(configs) if isinstance(configs, dict) else []:
+            if key.startswith("stack-guard@") and isinstance(configs[key], dict):
+                opts = configs[key].get("options")
+                if isinstance(opts, dict) and name in opts:
+                    v = opts[name]
+                    off = v is False or (isinstance(v, (str, int)) and str(v).strip().lower() in OFF_WORDS)
+        return off
+    except Exception:  # unreadable or odd settings: the default is on
+        return False
+
+
+def update_check_off():
+    return os.environ.get("PLUGIN_UPDATE_CHECK") == "0" or option_off("update_check") or saved_option_off("update_check")
+
+
 def latest_version():
     """Newest published stack-guard version, or None on any error. Cached 24 h in the config folder.
-    Only LATEST_URL is contacted; nothing about the user is sent."""
+    Only LATEST_URL is contacted; nothing about the user is sent. None at once when the update check is turned off."""
+    if update_check_off():
+        return None
     cache = config_dir("latest.json")
     try:
         with open(cache, encoding="utf-8") as fh:
@@ -242,6 +278,9 @@ def update_line(short=False):
 
 
 def cmd_version_check():
+    if update_check_off():
+        print("Update check is turned off.")
+        return 0
     new = latest_version()
     if new is None:
         print("Could not check for a newer stack-guard (offline?)")

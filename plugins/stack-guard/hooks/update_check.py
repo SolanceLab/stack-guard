@@ -10,7 +10,8 @@ What it sends: one GET of the public file you pass as argv[1]: use the plugin's 
 Nothing about the user, the machine or the session goes out. The answer is
 cached (24 h when good, 1 h when the fetch failed) so most sessions send nothing.
 
-Off switch: set the environment variable PLUGIN_UPDATE_CHECK=0 (no network, no output).
+Off switch: set the environment variable PLUGIN_UPDATE_CHECK=0, or turn off the plugin's update_check setting
+(env CLAUDE_PLUGIN_OPTION_UPDATE_CHECK = false/0/no/off). No network, no output.
 
 Usage: update_check.py <plugin_json_or_marketplace_json_raw_url> <marketplace_name>
 Prints one JSON line {"systemMessage": "..."} when a newer version exists,
@@ -125,7 +126,8 @@ def lookup_latest(url, name):
 
 
 def run(argv, env, script_path, out):
-    if env.get("PLUGIN_UPDATE_CHECK") == "0" or len(argv) < 2:
+    if (env.get("PLUGIN_UPDATE_CHECK") == "0" or len(argv) < 2
+            or env.get("CLAUDE_PLUGIN_OPTION_UPDATE_CHECK", "").strip().lower() in ("false", "0", "no", "off")):
         return
     url, marketplace = argv[0], argv[1]
     name, current = read_own_plugin(script_path, env)
