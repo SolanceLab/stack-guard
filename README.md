@@ -29,6 +29,16 @@ That is the whole thing. (If another plugin also has a `/stack-guard`, use `/sta
 
 You can also just say: *"check my stack for security problems"*.
 
+## Before you run it (please)
+
+Best practice for **any** plugin, this one included, even from people you trust: a plugin is instructions that run commands on your computer.
+
+1. **Read it.** stack-guard is plain text: one command, two skills, three agents, no code, no hooks, no MCP servers. After installing, see what it adds with `claude plugin details stack-guard`, and read the files in `~/.claude/plugins/cache/stack-guard/`.
+2. **Commit or back up your project first**, so any change is easy to undo.
+3. **Look before you fix.** Start with `/stack-guard --audit-only`: it reports and changes nothing.
+4. **Turn on Claude Code's sandbox** (macOS, Linux, WSL2): type `/sandbox`. Commands can then only write inside your project folder, and every new website needs your OK. When asked, allow `registry.npmjs.org`, `api.osv.dev`, `endoflife.date` and `pypi.org`. The sandbox covers the commands Claude runs; Claude's own file edits still follow your normal permission prompts. Docs: https://code.claude.com/docs/en/sandboxing
+5. **Strongest:** run Claude Code inside a dev container or a virtual machine, with no SSH keys or cloud credentials mounted. Docs: https://code.claude.com/docs/en/devcontainer
+
 ## What it does
 
 1. **Finds what you run.** Code projects, their deploy configs (Cloudflare Workers/Pages, Fly.io, Vercel, Netlify, Docker), background services and tunnels on your computer, and the runtimes they use. When a host CLI is already installed and logged in, it confirms what is really live, because the repo and the running app can differ.
