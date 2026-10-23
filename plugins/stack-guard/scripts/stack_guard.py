@@ -63,7 +63,7 @@ DEFAULT_TIME = "09:00"
 LABEL = "dev.stack-guard.watch"
 SECRET_WORD = re.compile(r"token|key|secret|password|auth", re.I)
 OSV_BATCH = "https://api.osv.dev/v1/querybatch"
-VERSION = "1.5.2"
+VERSION = "1.5.3"
 EOL_URL = "https://endoflife.date/api/%s.json"
 SKIP_DIRS = {"node_modules", "venv", "dist", "build", "worktrees", "__pycache__"}  # dot-folders are skipped too
 LATEST_URL = "https://raw.githubusercontent.com/SolanceLab/stack-guard/main/.claude-plugin/marketplace.json"
@@ -1883,7 +1883,8 @@ def schedule_path(root):
     """PATH for the scheduler: system folders plus the folders of node, python3, claude and codex found now,
     because a scheduler does not read your shell profile. Folders inside the scanned folder are left out."""
     dirs = list(BASE_PATH)
-    for tool in ("node", "python3", "claude", "codex"):
+    py_name = "python" if platform_name() == "windows" else "python3"  # on Windows python3 is often a Store stub
+    for tool in ("node", py_name, "claude", "codex"):
         found = outside_tool(tool, root)
         if found:
             dirs.append(os.path.dirname(found))

@@ -472,7 +472,7 @@ class DeployRuntimeAndVersion(unittest.TestCase):
             self.assertIn("deploy-runtime check: passed / failed / not possible", fh.read())
 
     def test_all_manifests_say_the_script_version(self):
-        self.assertEqual(sg.VERSION, "1.5.2")
+        self.assertEqual(sg.VERSION, "1.5.3")
         for rel in (("plugins", "stack-guard", ".claude-plugin", "plugin.json"), ("plugins", "stack-guard", ".codex-plugin", "plugin.json")):
             with open(os.path.join(ROOT, *rel), encoding="utf-8") as fh:
                 self.assertEqual(json.load(fh)["version"], sg.VERSION)
@@ -484,3 +484,30 @@ class DeployRuntimeAndVersion(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WindowsPythonInHooks(unittest.TestCase):
+    def commands(self):
+        hooks = json.load(open(os.path.join(PLUGIN, "hooks", "hooks.json")))["hooks"]
+        return [h["command"] for es in hooks.values() for e in es for h in e["hooks"]]
+
+    def run_with(self, command, os_name, names):
+        import subprocess, tempfile
+        d = tempfile.mkdtemp()
+        log = os.path.join(d, "ran")
+        for n in names:
+            p = os.path.join(d, n)
+            with open(p, "w") as fh:
+                fh.write("#!/bin/sh\necho %s >> %s\n" % (n, log))
+            os.chmod(p, 0o755)
+        env = {"PATH": d + os.pathsep + "/usr/bin:/bin", "CLAUDE_PLUGIN_ROOT": PLUGIN}
+        if os_name:
+            env["OS"] = os_name
+        subprocess.run(["sh", "-c", command], env=env, input="{}", text=True, capture_output=True, timeout=20)
+        return open(log).read().split() if os.path.exists(log) else []
+
+    def test_every_hook_picks_python_on_windows_and_python3_elsewhere(self):
+        for c in self.commands():
+            self.assertNotIn("python3 \"", c.replace('"$PY"', ""), c)
+            self.assertEqual(self.run_with(c, "Windows_NT", ["python", "python3"]), ["python"], c)
+            self.assertEqual(self.run_with(c, None, ["python", "python3"]), ["python3"], c)

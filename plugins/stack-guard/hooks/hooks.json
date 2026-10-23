@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/secret_guard.py\"",
+            "command": "PY=python3; [ \"$OS\" = Windows_NT ] && PY=python; \"$PY\" \"${CLAUDE_PLUGIN_ROOT}/hooks/secret_guard.py\"",
             "timeout": 10
           }
         ]
@@ -19,7 +19,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/secret_guard.py\" --post",
+            "command": "PY=python3; [ \"$OS\" = Windows_NT ] && PY=python; \"$PY\" \"${CLAUDE_PLUGIN_ROOT}/hooks/secret_guard.py\" --post",
             "timeout": 10
           }
         ]
@@ -30,7 +30,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/secret_guard.py\" --stop",
+            "command": "PY=python3; [ \"$OS\" = Windows_NT ] && PY=python; \"$PY\" \"${CLAUDE_PLUGIN_ROOT}/hooks/secret_guard.py\" --stop",
             "timeout": 10
           }
         ]
@@ -42,7 +42,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "command -v python3 >/dev/null 2>&1 && python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/update_check.py\" https://raw.githubusercontent.com/SolanceLab/stack-guard/main/plugins/stack-guard/.claude-plugin/plugin.json stack-guard || true",
+            "command": "PY=python3; [ \"$OS\" = Windows_NT ] && PY=python; command -v \"$PY\" >/dev/null 2>&1 && \"$PY\" \"${CLAUDE_PLUGIN_ROOT}/hooks/update_check.py\" https://raw.githubusercontent.com/SolanceLab/stack-guard/main/plugins/stack-guard/.claude-plugin/plugin.json stack-guard || true",
             "timeout": 10
           }
         ]

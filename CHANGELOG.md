@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.5.3
+
+- Windows: the hooks and the daily watch use `python` there, as the script already did. `python3` on Windows is often a Microsoft Store shortcut or a different Python.
+
 ## 1.5.2
 
 - Reading git history of a scanned repo never fetches anything or runs anything from that repo: network protocols, credential helpers and prompts are switched off, and a partial clone is skipped with a "Not checked" line instead of being fetched.
