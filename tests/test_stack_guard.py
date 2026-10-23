@@ -1,3 +1,4 @@
+# stack-guard — Copyright (c) 2026 House of Solance. MIT License, see LICENSE. Required Notice: Copyright (c) 2026 House of Solance (https://github.com/SolanceLab)
 """Offline tests for stack_guard.py. Run: python3 -m unittest discover -s tests -v"""
 import io
 import json

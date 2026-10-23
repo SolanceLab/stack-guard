@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# stack-guard — Copyright (c) 2026 House of Solance. MIT License, see LICENSE. Required Notice: Copyright (c) 2026 House of Solance (https://github.com/SolanceLab)
 """stack-guard: list what your projects run on, check it for known problems, tell you what is new.
 
 Python 3.9+, standard library only. Run:  python3 stack_guard.py <command> [folder]
