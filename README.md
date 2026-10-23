@@ -24,6 +24,10 @@ Start a new Codex conversation, then type `$stack-guard:run-stack-guard audit th
 
 ## Update
 
+**Turn on auto-update once (Claude Code):** `/plugin` → **Marketplaces** tab → **stack-guard** → **Enable auto-update**. Claude Code then installs new versions by itself a few minutes into a session and shows "Plugin updated: stack-guard · Run /reload-plugins to apply". (It is off by default for every marketplace that is not Anthropic's own.)
+
+Or update by hand:
+
 Already installed an earlier version? Update, then restart your tool:
 
 - Claude Code (terminal): `claude plugin marketplace update stack-guard` then `claude plugin update stack-guard@stack-guard`
