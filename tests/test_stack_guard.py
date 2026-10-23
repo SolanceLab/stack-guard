@@ -1190,3 +1190,32 @@ class ReleaseGateFixes(Base):
             self.assertTrue(sg.INDEX_FLAG.match(line), line)
         for env in ("PIP_FIND_LINKS=x", "UV_FIND_LINKS=x", "PIP_NO_INDEX=1"):
             self.assertTrue(sg.INDEX_ENV.search(env), env)
+
+
+class PrefixFolders(Base):
+    def test_cron_legacy_for_sibling_folder_with_same_prefix_is_kept(self):
+        sent = []
+        root = os.path.abspath(self.folder)
+
+        def run(args, input_text=None, timeout=30, cwd=None, stderr_out=None):
+            if list(args[1:]) == ["-l"]:
+                return 0, "5 8 * * * old %s # dev.stack-guard.watch" % shlex.quote(root + "2")
+            sent.append(input_text)
+            return 0, ""
+        with mock.patch.object(sg, "platform_name", lambda: "linux"), mock.patch.object(sg, "run_cmd", run):
+            self.run_main("watch-install", self.folder, "--yes")
+        self.assertIn(root + "2", sent[-1])
+
+    def test_windows_legacy_for_sibling_folder_with_same_prefix_is_kept(self):
+        deleted = []
+        root = os.path.abspath(self.folder)
+
+        def run(args, input_text=None, timeout=30, cwd=None, stderr_out=None):
+            if "/FO" in args:
+                return 0, "TaskName: \\dev.stack-guard.watch\nTask To Run: py stack_guard.py check %s2\n" % root
+            if "/Delete" in args and "dev.stack-guard.watch" in args:
+                deleted.append(args)
+            return 0, ""
+        with mock.patch.object(sg, "platform_name", lambda: "windows"), mock.patch.object(sg, "run_cmd", run):
+            self.run_main("watch-install", self.folder, "--yes")
+        self.assertEqual(deleted, [])

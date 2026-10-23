@@ -1583,12 +1583,15 @@ def remove_legacy(plat, root):
         return True
     if plat == "windows":
         code, out = run_system_tool(["schtasks", "/Query", "/TN", LABEL, "/V", "/FO", "LIST"], root)
-        if code != 0 or os.path.normcase(root) not in os.path.normcase(out):
+        want = os.path.normcase(os.path.normpath(root))
+        runs = [ln.split(":", 1)[1].strip().rstrip('"').strip() for ln in out.splitlines() if ln.strip().lower().startswith("task to run")]
+        if code != 0 or not any(os.path.normcase(r).endswith((" " + want, '"' + want)) or os.path.normcase(r) == want for r in runs):
             return None
         return run_system_tool(["schtasks", "/Delete", "/TN", LABEL, "/F"], root)[0] == 0
     code, current = run_system_tool(["crontab", "-l"], root)
     def mine(x):
-        return x.rstrip().endswith("# " + LABEL) and shlex.quote(root) in x
+        # the folder is the last argument, right before the marker: exact match, never a prefix like /srv/app vs /srv/app2
+        return x.rstrip().endswith(" " + shlex.quote(root) + " # " + LABEL)
     if code != 0 or not any(mine(x) for x in current.splitlines()):
         return None
     return edit_crontab(None, root, mine)
