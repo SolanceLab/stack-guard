@@ -373,3 +373,17 @@ class ReviewRound3(unittest.TestCase):
         self.assertEqual(self.run_guard("python3 -c \"import sys; sys.stderr.write(open('.env').read())\" | wrangler secret put TOKEN")[0], 2)
         self.assertEqual(self.run_guard("grep TOKEN .env | cut -d= -f2 | wrangler secret put TOKEN")[0], 2)
         self.assertEqual(self.run_guard("grep TOKEN .env | wrangler secret put TOKEN")[0], 0)
+
+
+class NeverHangs(unittest.TestCase):
+    """A device or pipe passed as the transcript must never be read: the hook finishes at once and steps aside."""
+
+    def test_endless_transcript_paths_finish_fast(self):
+        env = {k: v for k, v in os.environ.items() if k != "STACK_GUARD_ACTIVE"}
+        for path in ("/dev/urandom", "/dev/zero"):
+            for args, event in (([], "PreToolUse"), (["--stop"], "Stop")):
+                payload = json.dumps({"hook_event_name": event, "tool_name": "Bash", "tool_input": {"command": "cat .env"},
+                                      "transcript_path": path, "stop_hook_active": False})
+                r = subprocess.run([sys.executable, GUARD, *args], input=payload, capture_output=True, text=True,
+                                   timeout=10, env=env)
+                self.assertEqual(r.returncode, 0, (path, event))

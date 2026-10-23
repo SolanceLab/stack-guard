@@ -7,7 +7,9 @@ import json
 import os
 import re
 import shlex
+import stat
 import sys
+import time
 
 PATH_PARTS = ["/.docker/config.json", "/.kube/config", "/.codex/auth.json", "/.config/gcloud/"]
 EXEMPT = {".env.example", ".env.sample", ".env.template", ".env.dist"}
@@ -295,10 +297,33 @@ def pre_tool(data):
         sys.exit(2)
 
 
+TIME_BUDGET = 3.0  # seconds; a hook must never hang a tool call
+MAX_TRANSCRIPT_BYTES = 1 << 30  # 1 GB: far beyond a real session, but never endless
+
+
+def transcript_lines(path, binary=False):
+    """Lines of a REAL transcript file only. A device, pipe or socket (eg. /dev/urandom) is never read, and reading
+    stops at MAX_TRANSCRIPT_BYTES or TIME_BUDGET; then TranscriptUnreadable is raised so the caller steps aside."""
+    st = os.stat(path)
+    if not stat.S_ISREG(st.st_mode):
+        raise TranscriptUnreadable(path)
+    start, seen = time.monotonic(), 0
+    with open(path, "rb" if binary else "r", **({} if binary else {"encoding": "utf-8", "errors": "replace"})) as f:
+        for line in f:
+            seen += len(line)
+            if seen > MAX_TRANSCRIPT_BYTES or time.monotonic() - start > TIME_BUDGET:
+                raise TranscriptUnreadable(path)
+            yield line
+
+
+class TranscriptUnreadable(Exception):
+    pass
+
+
 def last_assistant_text(path):
     last = ""
-    with open(path, encoding="utf-8") as f:
-        for line in f:
+    if True:
+        for line in transcript_lines(path):
             try:
                 e = json.loads(line)
             except ValueError:
@@ -450,8 +475,8 @@ def entry_is_use(entry):
 
 def marker_in_file(path):
     """Read the transcript as JSONL; skill listings, reminders and prose never count. Bad lines are skipped."""
-    with open(path, "rb") as f:  # whole file: a full scan of a 373 MB transcript takes ~1.3 s
-        for line in f:
+    if True:  # whole file within the size/time caps: a full scan of a 373 MB transcript takes ~1.3 s
+        for line in transcript_lines(path, binary=True):
             try:
                 entry = json.loads(line)
             except ValueError:
