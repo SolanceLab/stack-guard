@@ -56,7 +56,7 @@ You can also just say: *"check my stack for security problems"*.
 
 ## How it works: script + agents
 
-- **The script** (`scripts/stack_guard.py`, Python standard library only) does the exact, repeatable part: it lists every project, deploy config, runtime and MCP server, checks every package against [OSV.dev](https://osv.dev) and every runtime against [endoflife.date](https://endoflife.date), and compares with the last run. Same result every time, free to run every day.
+- **The script** (`scripts/stack_guard.py`, Python standard library only) does the exact, repeatable part. It reads these lockfiles: npm `package-lock.json` (v2/v3), pinned `requirements*.txt`, `Pipfile.lock`, and `poetry.lock` / `uv.lock` on Python 3.11+. pnpm, Yarn, Bun, Go, Rust, Ruby and PHP projects are listed by the daily watch but package-checked only in a `/stack-guard` conversation. It lists every project, deploy config, runtime and MCP server, checks every package against [OSV.dev](https://osv.dev) and every runtime against [endoflife.date](https://endoflife.date), and compares with the last run. Same result every time, free to run every day.
 - **The agents** do the judgment: the news scout (web search only), the explainer (no tools), and in a conversation, the auditor and the fixer. They only get public package names and versions.
 - With no Python, the agents do everything by hand from the same instructions.
 
@@ -85,9 +85,9 @@ Best practice for **any** plugin, this one included, even from people you trust:
 
 ## What leaves your computer
 
-- Package names and versions: to OSV.dev, and in a conversation also to your package registry's audit service (`npm audit` sends your dependency list to the npm registry; private package names included).
+- Package names and versions: to OSV.dev (the daily watch never sends private npm names anywhere; they are counted, not listed), and in a conversation also to your package registry's audit service (`npm audit` sends your dependency list to the npm registry; private package names included).
 - Runtime names and versions: to endoflife.date.
-- Daily watch agents (when on): public package and runtime names and versions go to your own Claude Code or Codex account, and the news scout runs web searches with those generic names. Turn them off with `--no-agents`.
+- Daily watch agents (when on): public package and runtime names and versions go to your own Claude Code or Codex account, and the news scout runs web searches with those generic names. The news scout agent is web-only and the explainer agent is tool-less (no file access, no shell) in both Claude and Codex. Turn them off with `--no-agents`.
 - Webhook (only if you set one): a short summary of new findings (package names, versions, severities, counts) to the Discord or Slack channel you chose.
 - When a host CLI (wrangler, fly) is installed and logged in, the conversation may use it, and it talks to your own account on that host, as it always does.
 
@@ -95,7 +95,7 @@ Your source code, keys, `.env` files and file paths are not sent anywhere, and s
 
 ## Not covered yet
 
-Container image scanning, GitHub Actions pinning, package signatures/provenance, secret scanning, and Maven/Gradle/NuGet without lockfiles. macOS and Linux are fully supported; Windows works on a best-effort basis and the report lists what it skipped.
+Container image scanning, GitHub Actions pinning, package signatures/provenance, secret scanning, and Maven/Gradle/NuGet without lockfiles. macOS and Linux are fully supported; Windows works on a best-effort basis and the report lists what it skipped. On Windows the daily watch writes the report and sends the webhook; it shows no desktop pop-up.
 
 ## Needs
 

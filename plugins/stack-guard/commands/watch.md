@@ -21,7 +21,7 @@ Run `python3 <script> watch-remove "<folder>"` and `python3 <script> webhook-rem
 4. **Ask:** "Add this daily check at <time>? (yes / no)". Install nothing before the yes.
 5. **Install** after the yes: the same command with `--yes` (and `--no-agents` if used).
 6. **Where things live.** The schedule runs a copy of the script kept at `~/.config/stack-guard/bin/stack_guard.py` (Windows `%APPDATA%\stack-guard\bin\`), so plugin updates cannot break it silently; each run writes a log to `~/.config/stack-guard/logs/` (the exact file is printed at install). After updating stack-guard, run `/stack-guard:watch` again so the copy is refreshed. Tell the user both.
-7. **Prove it.** Run the scheduled command once now exactly as printed in the entry (it includes `check --notify`, plus `--agents` unless turned off), confirm a new report appears in `<folder>/.stack-guard/reports/` and the desktop notification shows. Tell the user how to stop it: `/stack-guard:watch --off`.
+7. **Prove it.** Run the scheduled command once now exactly as printed in the entry (it includes `check --notify`, plus `--agents` unless turned off), confirm a new report appears in `<folder>/.stack-guard/reports/` and (macOS and Linux) the desktop notification shows. On Windows there is no desktop pop-up: confirm the report file (and the webhook message, if one is set) instead. Tell the user how to stop it: `/stack-guard:watch --off`.
 
 ## Codex users
 
