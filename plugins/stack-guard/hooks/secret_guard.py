@@ -41,21 +41,116 @@ NAMED_SECRET = re.compile(
     r"""(?:"(?![$\[<])([^"\n]{8,})"|'(?![$\[<])([^'\n]{8,})'|(?![$\[<"'])(?!\d+\b)([^\s"'`,;})\]]{8,}))""", re.I)
 
 
-def hide_named(m):
+# Explicit reference syntax only, matched through to the end of the value: the code prefix, then name characters.
+ENV_REFERENCE = re.compile(
+    r"(?:(?:process\.env\.|import\.meta\.env\.|os\.environ|os\.getenv\(|getenv\(|ENV\[|Deno\.env\.get\(|env::var\(|"
+    r"System\.getenv\()[\w.\[(]*|\$\{?\w+|%[A-Za-z_]\w*%)")
+# A property path such as settings.api_key: two or more names joined by dots. A bare name is never a reference.
+# It counts only when it starts at a settings holder; any other dotted text (secret.literal.value) is a literal.
+FALLBACK_TAIL = re.compile(r"\s*(?:\|\||\?\?|\bor\b)\s*(?:''|\"\")\s*$")
+PROPERTY_PATH = re.compile(
+    r"(?:settings|config|configuration|cfg|conf|env|environment|options|opts|self|this|args|params|vars|secrets|"
+    r"app|props|ctx|context|process|os|st)(?:\.[A-Za-z_]\w*)+")
+
+
+def is_env_reference(value, quoted):
+    """True when a value only points at a variable or setting (process.env.X, os.environ[..], ${X}, settings.api_key)."""
+    v = FALLBACK_TAIL.sub("", value.strip())
+    if ENV_REFERENCE.fullmatch(v):
+        return True
+    # shortcut: an unquoted dotted name counts as a reference only when it starts at a known settings holder; a bare
+    # name (correct_horse, apiSecret) or other dotted text is a literal. Upgrade path: read the source line's imports.
+    return not quoted and PROPERTY_PATH.fullmatch(v) is not None
+
+
+def hide_named(m, hidden=None):
+    value = next((g for g in m.group(2, 3, 4) if g is not None), "")
+    if is_env_reference(value, m.group(4) is None):
+        return m.group(0)
+    if hidden is not None:
+        hidden.append(1)
     quote = '"' if m.group(2) is not None else "'" if m.group(3) is not None else ""
     return m.group(1) + quote + "[REDACTED secret value]" + quote
 READERS = {"cat", "head", "tail", "less", "more", "bat", "grep", "rg", "ag", "sed", "awk", "cut",
            "strings", "xxd", "od", "hexdump", "base64", "jq", "yq"}
 
 
-def is_secret_path(p):
-    p = os.path.expanduser(str(p)).replace("\\", "/")
+# A path with a wildcard is judged by the names it could match, so no folder listing is needed.
+GLOB_CHARS = re.compile(r"[*?\[]|[@+!]\(")
+# Bash extglob groups, @(a|b) ?(a) +(a) *(a) !(a): judged as a wildcard in their place.
+SECRET_DIR_MARKS = (".aws", ".ssh", ".config/gcloud", ".docker", ".kube", ".codex")
+BRACE_EXPANSION = re.compile(r"\{([^{}]*(?:,|\.\.)[^{}]*)\}")
+SECRET_DIR_SAMPLES = ["credentials", "credentials.db", "config", "config.json", "auth.json", "id_rsa", "id_ed25519"]
+EXTGLOB_GROUP = re.compile(r"[@?*+!]\([^()]*\)")
+SAMPLE_SECRET_NAMES = [".env", ".env.", ".env.local", ".env.production", ".dev.vars", ".npmrc", ".pypirc", ".netrc", ".pgpass",
+                       "secrets.yaml", "secrets.yml", "secrets.json", "secrets.toml", "server.pem", "server.key",
+                       "credentials", "credentials.json", "prod-service-account.json", "id_rsa", "id_ed25519",
+                       "claude.json", ".claude.json"]
+
+
+def glob_is_secret(directory, name):
+    if any(fnmatch.fnmatchcase(sample, name) for sample in SAMPLE_SECRET_NAMES):
+        return True
+    return any(mark in directory for mark in SECRET_DIR_MARKS) and any(
+        fnmatch.fnmatchcase(sample, name) for sample in SECRET_DIR_SAMPLES)
+
+
+def brace_variants(pattern, cap=64):
+    """Bounded shell-style brace expansion: {a,b} is expanded; a range such as {1..5} stands for one character class
+    (numbers) or one character (letters). None when the expansion would pass the cap."""
+    out = [pattern]
+    for _ in range(8):
+        expanded, changed = [], False
+        for item in out:
+            match = BRACE_EXPANSION.search(item)
+            if not match:
+                expanded.append(item)
+                continue
+            changed = True
+            body = match.group(1)
+            if "," not in body:  # a range: not expanded one by one
+                stand_in = "[0-9]*" if re.fullmatch(r"-?\d+\.\.-?\d+(\.\.-?\d+)?", body) else "?"
+                expanded.append(item[:match.start()] + stand_in + item[match.end():])
+                continue
+            for choice in body.split(","):
+                expanded.append(item[:match.start()] + choice + item[match.end():])
+            if len(expanded) > cap:
+                return None
+        out = expanded
+        if not changed:
+            return out
+    return None
+
+
+def _is_secret_one(p):
     name = p.rsplit("/", 1)[-1]
     if not name or name in EXEMPT or name.endswith(".pub"):
         return False
     if any(part in "/" + p for part in PATH_PARTS):
         return True
+    if GLOB_CHARS.search(name) and glob_is_secret(p[:len(p) - len(name)], name):
+        return True
     return any(fnmatch.fnmatchcase(name, g) for g in NAME_GLOBS)
+
+
+def is_secret_path(p):
+    p = os.path.expandvars(os.path.expanduser(str(p))).replace("\\", "/")
+    prev = None
+    while prev != p:  # nested groups collapse from the inside out
+        prev, p = p, EXTGLOB_GROUP.sub("*", p)
+    if len(p) > 4096:
+        return bool(GLOB_CHARS.search(p) or BRACE_EXPANSION.search(p))  # too long to judge: stay on the safe side
+    if BRACE_EXPANSION.search(p):
+        variants = brace_variants(p)
+        if variants is None:
+            variants = [BRACE_EXPANSION.sub("*", p)]  # shortcut: too many choices, so test every choice at once as a wildcard
+        return any(_is_secret_one(v) for v in variants)
+    return _is_secret_one(p)
+
+
+def secret_glob(p):
+    """Whether a wildcard path or glob can select a protected name (used by the Grep tool rule)."""
+    return bool(GLOB_CHARS.search(str(p)) or BRACE_EXPANSION.search(str(p))) and is_secret_path(p)
 
 
 SECRET_VAR = re.compile(r"\$\{?[A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY|PRIVATE_?KEY|CREDENTIAL)[A-Za-z0-9_]*",
@@ -80,6 +175,9 @@ def hoist_substitutions(cmd, bodies):
 
 def segments_sep(cmd):
     """Yield (tokens, separator that follows) for each simple command."""
+    prev = None
+    while prev != cmd:  # shortcut: extglob groups become a plain wildcard (also inside quotes) so the lexer keeps one word
+        prev, cmd = cmd, EXTGLOB_GROUP.sub("*", cmd)
     try:
         lex = shlex.shlex(cmd, posix=True, punctuation_chars=True)
         lex.whitespace_split = True
@@ -139,19 +237,45 @@ def recursive_unfiltered(head, seg):
         if skip:
             skip = False  # the pattern (or pattern file) after -e/-f is not a search path
             continue
-        if t in ("-e", "-f", "--regexp", "--file"):
-            skip = True
+        if t in ("-e", "-f", "--regexp", "--file", "--exclude", "--exclude-dir"):
+            skip = True  # the argument of these flags is a pattern, not a search path
             continue
         rest.append(t)
     return not explicit_paths_only(rest, has_pat)
 
 
+WRAPPERS = {"env", "command", "exec", "nohup", "sudo", "time", "nice"}
 SHELLS = {"sh", "bash", "zsh", "dash", "ksh"}
+MAX_SHELL_DEPTH = 3
+# Options of each wrapper that consume the next token (so it is not mistaken for the wrapped command).
+WRAPPER_ARG_OPTS = {
+    "sudo": {"-u", "-g", "-h", "-p", "-C", "-D", "-R", "-T", "-U", "-r", "-t",
+             "--user", "--group", "--host", "--prompt", "--chdir", "--chroot", "--role", "--type",
+             "--other-user", "--command-timeout", "--close-from"},
+    "env": {"-u", "-C", "-S", "--unset", "--chdir", "--split-string"},
+    "nice": {"-n", "--adjustment"},
+    "time": {"-f", "-o", "--format", "--output"},
+    "exec": {"-a"},
+}
 PIPE_PRODUCERS = {"grep", "cat", "cut", "head", "tail", "tr"}
 
 
 def wrapped_command(head, seg):
     """The command string a shell wrapper runs (sh -c 'x', bash -lc 'x', eval x), or ''."""
+    while head in WRAPPERS and len(seg) > 1:  # `env bash -c ...`: look at the command the wrapper starts
+        takes_arg = WRAPPER_ARG_OPTS.get(head, set())
+        rest, skip = [], False
+        for t in seg[1:]:
+            if skip:
+                skip = False  # this token is the previous option's argument
+            elif t.startswith("-") and not rest:
+                skip = t in takes_arg
+            elif rest or not re.fullmatch(r"[A-Za-z_]\w*=.*", t):
+                rest.append(t)
+        seg = rest
+        if not seg:
+            return ""
+        head = os.path.basename(seg[0])
     if head == "eval":
         return " ".join(seg[1:])
     if head in SHELLS:
@@ -167,11 +291,13 @@ KEYWORDS = {"if", "then", "else", "elif", "while", "until", "do", "!", "{", "(",
 IN_PLACE = re.compile(r"^-(?!-)[a-zA-Z]*i|^--in-place")
 OUTPUT_ALIAS = re.compile(r"/dev/(?:stdout|stderr|tty)|/dev/fd/\d+|/proc/(?:self|\d+|thread-self)/fd/\d+")
 WRITE_REDIRECTS = {">", ">>", ">|", "&>", "&>>"}
-MENTION_SPLIT = re.compile(r"[^\s'\"(),=:;@]+")
+MENTION_SPLIT = re.compile(r"[^\s'\"(),=:;@<>]+")
 
 
 def secret_mention(tok):
     """The protected path a token names (as a whole or inside quoted code), or None."""
+    if tok.startswith(("--exclude", "--glob=!", "!")):
+        return None  # an exclusion pattern names what to skip, not what to read
     for c in [tok] + MENTION_SPLIT.findall(tok):
         if "/" not in c and c == "credentials":
             continue  # shortcut: the bare word 'credentials' is too common in prose to count as a file
@@ -180,21 +306,46 @@ def secret_mention(tok):
     return None
 
 
-def is_consumer(seg):
-    """A command that takes a secret on stdin and prints nothing back."""
-    w = [os.path.basename(t) for t in seg[:1]]
-    if not w:
+# Approved consumers: the BARE command name, then exactly this subcommand shape, then one name.
+# Flags that take a value (their value is not the secret's name).
+CONSUMER_SHAPES = {
+    "gh": (("secret", "set"), {"-R", "--repo", "-e", "--env", "-o", "--org", "-a", "--app", "-u", "--user", "-r", "--repos",
+                               "-v", "--visibility", "-f", "--env-file", "-b", "--body"}),
+    "wrangler": (("secret", "put"), {"--name", "-n", "--env", "-e", "--config", "-c"}),
+    "security": (("add-generic-password",), {"-a", "-s", "-l", "-j", "-c", "-C", "-D", "-k", "-A", "-T", "-U"}),
+}
+
+
+PATH_CHANGE = re.compile(r"(?<![\w.-])PATH\s*\+?=|\bexport\s+(?:-\w+\s+)?PATH\b|\bhash\s+-p\b")
+
+
+def shadowed_consumers(cmd):
+    """Trusted names this command redefines (a function or alias), or every name when it changes PATH:
+    a bare name is trusted only when it still reaches the real program."""
+    if PATH_CHANGE.search(cmd):
+        return set(CONSUMER_SHAPES)
+    return {n for n in CONSUMER_SHAPES
+            if re.search(r"(?<![\w./-])%s\s*\(\s*\)|\bfunction\s+%s\b|\balias\s+%s=" % ((re.escape(n),) * 3), cmd)}
+
+
+def is_consumer(seg, final=True, shadowed=()):
+    """A command that takes a secret on stdin, prints nothing back and sends it nowhere: a trusted CLI named bare
+    (no path), with its exact subcommand shape and one name, as the last stage of the pipeline."""
+    if not final or not seg or seg[0] not in CONSUMER_SHAPES or seg[0] in shadowed:
         return False
-    if w[0] == "wrangler":
-        return "secret" in seg and ("put" in seg or "bulk" in seg)
-    if w[0] == "gh":
-        return "secret" in seg and "set" in seg
-    if w[0] == "security":
-        return "add-generic-password" in seg
-    if w[0] == "curl":
-        return any(t in ("-d", "--data", "--data-binary", "--data-raw") and i + 1 < len(seg) and seg[i + 1] == "@-"
-                   for i, t in enumerate(seg)) or any(t.startswith(("-d@-", "--data-binary=@-", "--data=@-")) for t in seg)
-    return False
+    sub, value_flags = CONSUMER_SHAPES[seg[0]]
+    rest = seg[1:]
+    if tuple(rest[:len(sub)]) != sub:
+        return False
+    names, skip = [], False
+    for t in rest[len(sub):]:
+        if skip:
+            skip = False
+        elif t.startswith("-"):
+            skip = "=" not in t and t in value_flags
+        else:
+            names.append(t)
+    return len(names) == (0 if seg[0] == "security" else 1)  # curl and other senders are not approved: the content must not leave this computer
 
 
 def mention_ok(head, seg, i, piped_to_consumer):
@@ -226,10 +377,158 @@ def stderr_leak(body, bodies):
     return None
 
 
-def bash_violation(cmd, bodies=None):
+def env_lists_all(head, seg):
+    """True when env or printenv carries only option flags (and NAME=VALUE for env), so it still prints every variable."""
+    if head not in ("env", "printenv"):
+        return False
+    rest, i = seg[1:], 0
+    while i < len(rest):
+        t = rest[i]
+        if head == "env" and (t in ("--ignore-environment", "--help", "--version") or (
+                re.fullmatch(r"-[0v]*[i][0v]*", t))):
+            return False  # clears the environment or runs nothing: nothing inherited is printed
+        if t.startswith("-") and t != "-":
+            i += 2 if head == "env" and t in ("-u", "-C", "-S", "--unset", "--chdir") else 1
+        elif head == "env" and "=" in t:
+            i += 1
+        else:
+            return False
+    return True
+
+
+def env_dump(head, seg):
+    """The command when it prints the shell's variables (export, declare -p, typeset -x ...), or a secret-named one."""
+    if head not in ("export", "declare", "typeset"):
+        return None
+    args = seg[1:]
+    flags = "".join(t[1:] for t in args if re.fullmatch(r"-[A-Za-z]+", t))
+    names = [t for t in args if not t.startswith("-")]
+    lists = (head == "export" and ("p" in flags or not args)) or (head != "export" and ("p" in flags or "x" in flags))
+    if head != "export" and not args:
+        lists = True
+    if lists and not any("=" in t for t in names):
+        if not names or any(SECRET_ENV_NAME.search(t) for t in names):
+            return " ".join(seg[:2])
+    return None
+
+
+PROC_FILE = re.compile(r"/proc/[^/\s]*/(?:task/[^/\s]*/)?(?:cmdline|environ)\b")
+PS_UNSAFE_FIELDS = {"args", "command", "cmd", "cmdline", "arguments"}
+PS_BSD_ONLY_BLOCK = set("e")  # BSD `e` appends the environment; with a dash, -e means every process
+PS_VALUE_LETTERS = set("pPtCGgUsq")
+PS_BLOCK_LETTERS = set("fFlwWuE")  # full listing, long, wide, user format, environment
+
+
+def proc_file_reachable(token):
+    """True when a word names, or by wildcard or brace could name, /proc/<pid>/cmdline or /proc/<pid>/environ."""
+    if "/proc/" not in token:
+        return False
+    if PROC_FILE.search(token):
+        return True
+    variants = brace_variants(EXTGLOB_GROUP.sub("*", token))
+    if variants is None:
+        return True  # too many brace choices to judge: treat as a hit
+    for v in variants:
+        rest = v.partition("/proc/")[2].split("/")
+        if len(rest) >= 2 and any(fnmatch.fnmatchcase(f, rest[-1]) for f in ("cmdline", "environ")):
+            return True
+    return False
+
+
+def ps_fields_unsafe(value):
+    # GNU procps allows a width suffix (args:100), so drop `:<width>` before comparing
+    return any(f.split("=")[0].split(":")[0].strip().lower() in PS_UNSAFE_FIELDS for f in re.split(r"[,\s]+", value) if f)
+
+
+def ps_prints_arguments(seg):
+    """True unless ps is given an explicit -o list of names and numbers only (plain ps prints arguments on macOS)."""
+    toks, i, has_format = seg[1:], 0, False
+    while i < len(toks):
+        t = toks[i]
+        i += 1
+        if t.startswith("--"):
+            name, _, val = t.partition("=")
+            if name == "--format":
+                has_format = True
+                val = val or (toks[i] if i < len(toks) else "")
+                i += 0 if "=" in t else 1
+                if ps_fields_unsafe(val):
+                    return True
+            elif name in ("--width", "--cols", "--columns", "--forest"):
+                return True
+            continue
+        letters = t[1:] if t.startswith("-") else t  # BSD words (aux, axo) are read like clusters
+        if not letters or not re.fullmatch(r"[A-Za-z]+", letters):
+            continue
+        dash = t.startswith("-")
+        if dash and letters == "u":
+            i += 1  # `-u NAME` selects a user
+            continue
+        for k, ch in enumerate(letters):
+            if ch in "oO":
+                has_format = has_format or ch == "o"
+                rest = letters[k + 1:]
+                val = rest or (toks[i] if i < len(toks) else "")
+                i += 0 if rest else 1
+                if ch == "O" or ps_fields_unsafe(val):
+                    return True
+                break
+            if ch in PS_VALUE_LETTERS:
+                i += 0 if letters[k + 1:] else 1
+                break
+            if ch in PS_BLOCK_LETTERS or (not dash and ch in PS_BSD_ONLY_BLOCK):
+                return True
+    return not has_format
+
+
+def unwrap_runner(head, seg):
+    """(head, seg) of the program a runner word starts: `env ps aux`, `sudo -u x ps aux`, `nice -n 5 ps aux`,
+    `timeout 5 ps aux`. Shell bodies (`sh -c`) are handled separately by wrapped_command."""
+    runners = WRAPPERS | {"timeout", "stdbuf"}
+    while head in runners and len(seg) > 1:
+        takes_arg = WRAPPER_ARG_OPTS.get(head, set()) | ({"-s", "-k", "--signal", "--kill-after"} if head == "timeout" else set())
+        rest, skip, need_duration = [], False, head == "timeout"
+        for t in seg[1:]:
+            if skip:
+                skip = False
+            elif t.startswith("-") and not rest:
+                skip = t in takes_arg
+            elif need_duration and not rest:
+                need_duration = False  # timeout's DURATION
+            elif rest or not re.fullmatch(r"[A-Za-z_]\w*=.*", t):
+                rest.append(t)
+        if not rest:
+            return head, seg
+        seg = rest
+        head = os.path.basename(seg[0])
+    return head, seg
+
+
+def process_listing_violation(head, seg):
+    """A hit string when the command prints other programs' command lines or environments, else None."""
+    head, seg = unwrap_runner(head, seg)
+    if head == "find" and any(t == "/proc" or t.startswith("/proc/") for t in seg[1:]) and any(
+            "cmdline" in t or "environ" in t for t in seg[1:]):
+        return "process:/proc"
+    if any(proc_file_reachable(t) for t in seg):
+        return "process:/proc"
+    if head == "ps" and ps_prints_arguments(seg):
+        return "process:ps"
+    if head == "pgrep":
+        # short flags in any split or cluster (-a, -f -l, -lf) and the long forms
+        short = "".join(t[1:] for t in seg[1:] if re.fullmatch(r"-[A-Za-z]+", t))
+        longs = {t.partition("=")[0] for t in seg[1:] if t.startswith("--")}
+        if "a" in short or ("f" in short and "l" in short) or longs & {"--list-full"} or (
+                longs & {"--full"} and longs & {"--list-name", "--list-full"}):
+            return "process:pgrep"
+    return None
+
+
+def bash_violation(cmd, bodies=None, depth=0):
     bodies = [] if bodies is None else bodies
     cmd = hoist_substitutions(cmd, bodies)
     parts = list(segments_sep(cmd))
+    shadowed = shadowed_consumers(cmd)
     for n, (seg, sep) in enumerate(parts):
         words = [os.path.basename(t) for t in seg]
         for i, t in enumerate(seg):
@@ -240,7 +539,9 @@ def bash_violation(cmd, bodies=None):
         head = words[0]
         inner = wrapped_command(head, seg)
         if inner:
-            hit = bash_violation(inner, bodies)
+            if depth >= MAX_SHELL_DEPTH:
+                return "a shell nested more than %d deep" % MAX_SHELL_DEPTH
+            hit = bash_violation(inner, bodies, depth + 1)
             if hit:
                 return hit
         holes = [int(n) for n in HOLE.findall(" ".join(seg))]
@@ -255,8 +556,16 @@ def bash_violation(cmd, bodies=None):
                 hit = bash_violation(bodies[k], bodies)
                 if hit:
                     return hit
+        listing = process_listing_violation(head, seg)
+        if listing:
+            return listing
         if head in ("printenv", "env", "set") and len(seg) == 1:
             return head
+        if env_lists_all(head, seg):
+            return " ".join(seg[:2])
+        dump = env_dump(head, seg)
+        if dump:
+            return dump
         if head == "printenv" and any(SECRET_ENV_NAME.search(t) for t in seg[1:]):
             return "printenv " + seg[1]
         if head in PRINTERS and any(SECRET_VAR.search(t) for t in seg[1:]):
@@ -279,12 +588,123 @@ def bash_violation(cmd, bodies=None):
         # The secret may only feed an approved consumer directly: any stage between them (tee, cat, head...)
         # could copy it to stderr, the terminal or a file.
         # Only plain text tools may feed the consumer: an interpreter could also copy the secret to stderr.
-        piped = sep == "|" and n + 1 < len(parts) and is_consumer(parts[n + 1][0]) and main in PIPE_PRODUCERS
+        piped = (sep == "|" and n + 1 < len(parts) and main in PIPE_PRODUCERS
+                 and is_consumer(parts[n + 1][0], final=parts[n + 1][1] != "|", shadowed=shadowed))
         for i, t in enumerate(seg):
+            if i and seg[i - 1] in ("--exclude", "--exclude-dir"):
+                continue  # the pattern after an exclude flag names what to skip
             hit = secret_mention(t)
             if hit and not mention_ok(main, seg, i, piped):
                 return hit
     return None
+
+
+CODE_TYPES = {"c", "cpp", "cs", "go", "java", "js", "jsx", "kt", "lua", "php", "py", "rb", "rs", "scala", "swift", "ts", "tsx"}
+
+
+TYPE_EXTENSIONS = {  # mirrors ripgrep's built-in type list (rg --type-list); a name ending in .in also counts for c and cpp
+    "c": (".c", ".h", ".cats"), "cpp": (".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx", ".h", ".c", ".inl"),
+    "cs": (".cs",), "go": (".go",), "java": (".java", ".jsp", ".jspx", ".properties"),
+    "js": (".js", ".mjs", ".cjs", ".jsx", ".vue"), "jsx": (".jsx",), "kt": (".kt", ".kts"), "lua": (".lua",),
+    "php": (".php", ".php3", ".php4", ".php5", ".php7", ".php8", ".pht", ".phtml"), "py": (".py", ".pyi"),
+    "rb": (".rb",), "rs": (".rs",), "scala": (".scala", ".sbt"), "swift": (".swift",),
+    "ts": (".ts", ".tsx", ".mts", ".cts"), "tsx": (".tsx",), "vue": (".vue",), "svelte": (".svelte", ".svelte.ts"),
+}
+WALK_MAX_ENTRIES, WALK_MAX_SECONDS = 5000, 1.0
+WALK_SKIP = {".git"}
+
+
+def gitignores_node_modules(directory, cache={}):
+    """Whether ripgrep would skip a node_modules folder inside this directory: only when a .gitignore at or below the
+    repository root names it (and nothing un-ignores it). Outside a git repository ripgrep reads no .gitignore."""
+    directory = os.path.abspath(directory)
+    if directory in cache:
+        return cache[directory]
+    chain, here, root = [], directory, None
+    while True:
+        chain.append(here)
+        if os.path.exists(os.path.join(here, ".git")):
+            root = here
+            break
+        parent = os.path.dirname(here)
+        if parent == here:
+            break
+        here = parent
+    ignored = False
+    if root:
+        for d in reversed(chain):
+            try:
+                lines = [ln.strip() for ln in open(os.path.join(d, ".gitignore"), errors="replace")]
+            except OSError:
+                continue
+            if any(ln in ("!node_modules", "!node_modules/", "!/node_modules", "!**/node_modules") for ln in lines):
+                ignored = False
+            elif any(ln in ("node_modules", "node_modules/", "/node_modules", "/node_modules/", "**/node_modules", "**/node_modules/")
+                     for ln in lines):
+                ignored = True
+    cache[directory] = ignored
+    return ignored
+
+
+def selected_by(name, rel, file_glob, exts):
+    """Whether a Grep glob and/or type would select this file. Over-selecting is safe: it can only block more."""
+    low = name.lower()
+    if exts and not (low.endswith(exts) or (low.endswith(".in") and low[:-3].endswith(exts))):
+        return False
+    if file_glob:
+        pats = brace_variants(file_glob) or [file_glob]
+        if not any(fnmatch.fnmatchcase(name, g) or fnmatch.fnmatchcase(rel, g) or fnmatch.fnmatchcase(rel, "*/" + g.lstrip("/"))
+                   for g in pats):
+            return False
+    return True
+
+
+def protected_file_selected(root, file_glob, exts):
+    """Walk root (bounded, dot-folders included) for a protected file the glob/type would select.
+    Returns its path, "narrow:search" when the walk hit its bound, or None."""
+    root = os.path.expanduser(root or ".")
+    if os.path.isfile(root):
+        return None  # a protected single file was already refused by name
+    start, seen = time.monotonic(), 0
+    for here, dirs, files in os.walk(root, followlinks=False):
+        dirs[:] = [d for d in dirs if d not in WALK_SKIP
+                   and not (d == "node_modules" and gitignores_node_modules(here)) and not (  # a Windows junction is a link os.walk may still enter
+            hasattr(os.path, "isjunction") and os.path.isjunction(os.path.join(here, d)))]
+        for name in files:
+            seen += 1
+            if seen > WALK_MAX_ENTRIES or time.monotonic() - start > WALK_MAX_SECONDS:
+                return "narrow:search"
+            full = os.path.join(here, name)
+            rel = os.path.relpath(full, root).replace("\\", "/")
+            if is_secret_path(full) and selected_by(name, rel, file_glob, exts):
+                return full
+        seen += len(dirs)
+    return None
+
+
+def unrestricted_content_search(inp):
+    """A content search that can print lines from secret files. A glob or code type narrows it only when no protected
+    file under the search path would be selected (checked by walking the path); without either, a folder is refused.
+    Searches that list file names or counts print no file content."""
+    if inp.get("output_mode") != "content":  # the tool's default (and files_with_matches / count) shows no file content
+        return None
+    path, file_glob = inp.get("path"), inp.get("glob")
+    file_type = str(inp.get("type") or "").lower()
+    exts = TYPE_EXTENSIONS.get(file_type)
+    positive_glob = bool(file_glob) and not str(file_glob).lstrip().startswith("!")
+    path_text = str(path or "")
+    basename = os.path.basename(path_text.rstrip("/\\"))
+    single_file = (bool(path_text) and path_text.rstrip("/") not in BROAD_PATHS
+                   and ("." in basename or os.path.isfile(os.path.expanduser(path_text)))  # README, Makefile: real files
+                   and not path_text.startswith("~") and not GLOB_CHARS.search(path_text)
+                   and not BRACE_EXPANSION.search(path_text) and not os.path.isdir(os.path.expanduser(path_text)))
+    if single_file:
+        return None
+    if not (exts or positive_glob):
+        return "broad:search"
+    if GLOB_CHARS.search(path_text) or BRACE_EXPANSION.search(path_text):
+        return "broad:search"
+    return protected_file_selected(path_text, str(file_glob) if positive_glob else None, tuple(exts) if exts else None)
 
 
 def pre_tool(data):
@@ -292,16 +712,31 @@ def pre_tool(data):
     if tool == "Read":
         hit = inp.get("file_path") if is_secret_path(inp.get("file_path") or "") else None
     elif tool == "Grep":
+        content = inp.get("output_mode") == "content"
+        # A named secret file is refused in every mode; a wildcard that could select one only when lines are printed.
         hit = next((v for v in (inp.get("path"), inp.get("glob"))
-                    if v and (is_secret_path(v) or os.path.basename(v).startswith(".env")
-                              and os.path.basename(v) not in EXEMPT)), None)
+                    if v and (content or not (GLOB_CHARS.search(str(v)) or BRACE_EXPANSION.search(str(v))))
+                    and (is_secret_path(v) or os.path.basename(v).startswith(".env")
+                         and os.path.basename(v) not in EXEMPT)), None)
+        hit = hit or unrestricted_content_search(inp)
     elif tool == "Bash":
         hit = bash_violation(inp.get("command") or "")
     else:
         hit = None
+    if hit and hit.startswith("process:"):
+        sys.stderr.write("stack-guard secret guard: process command lines can hold other programs' keys; "
+                         "list names only: `ps -axo comm`\n")
+        sys.exit(2)
     if hit:
         hint = ""
-        if hit.startswith("recursive:"):
+        if hit == "broad:search":
+            hit = "any secret file under that search"
+            hint = (" Give the Grep tool a narrower path (one file), a code type, or a glob that cannot match a secret file;"
+                    " or use output_mode files_with_matches to list only file names.")
+        elif hit == "narrow:search":
+            hit = "a protected file somewhere under that search"
+            hint = " Narrow the search to the source folders you need (a smaller path), or name one file."
+        elif hit.startswith("recursive:"):
             hit = "any secret file under that search"
             hint = " To search code, use `rg PATTERN` (it skips ignored files like .env) or name the source folders."
         sys.stderr.write(
@@ -360,9 +795,10 @@ def redact(obj, found):
             obj, n = re.subn(rx, "[REDACTED %s]" % kind, obj)
             if n:
                 found.append(kind)
-        obj, n = NAMED_SECRET.subn(hide_named, obj)
-        if n:
-            found.append("secret value under a secret-sounding name")
+        hidden = []
+        obj = NAMED_SECRET.sub(lambda m: hide_named(m, hidden), obj)
+        if hidden:
+            found.append("literal secret value under a secret-sounding name")
         return obj
     if isinstance(obj, list):
         return [redact(x, found) for x in obj]
@@ -381,8 +817,9 @@ def post_tool(data):
         "updatedToolOutput": clean,
         "additionalContext": (
             "stack-guard secret guard: the output of that command held what looks like a %s, so it was "
-            "removed from the chat. Do not try to print it again. Tell the user in one line that it appeared "
-            "and that they should rotate (replace) it." % found[0])}}))
+            "removed from the chat. Do not try to print it again. Tell the user in one line which kind of value "
+            "was hidden and that they should rotate (replace) it, because a literal value was hidden. A line that "
+            "only reads a key from the environment is left as it is and needs no rotation." % found[0])}}))
 
 
 def stop(data):

@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.5.5
+
+- Secret guard hardening: catches more ways of reading or sending a secret file (including wildcard and brace forms) and environment dumps; whole-folder content searches need a file type or a single file while stack-guard is in use.
+- Python packages stay on your computer when a private package index is set for your whole computer, in the environment or in your pip/uv/Poetry settings.
+- Files and folders that point outside the scanned folder are not read.
+- Secret guard: a secret may be piped only into a trusted command named bare, in its exact form, as the last step. A content search narrowed by a file pattern or type is checked against the real files under the search folder.
+- More private-index settings count: a project `uv.toml` or `poetry.toml`, and the Windows, virtualenv and Poetry config locations. An empty `PIP_NO_INDEX` counts as set.
+- The committed-secrets check skips vendored folders (`.venv`, `venv`, `site-packages`, `node_modules`) and `cacert.pem`.
+- Windows: folder junctions are treated like links, and tests skip with a stated reason where a symlink or POSIX feature is missing.
+- The secret guard no longer treats code that reads a key from the environment as a leaked key, and process listings show names only while stack-guard is running.
+- Marta S. — reporter
+- Cassian Varen — technical contributor/co-author
+
 ## 1.5.4
 
 - Settings: turn off the secret guard, only its final-reply check, or the update check, when you install or later with `/plugin configure stack-guard@stack-guard`. When off, that hook stops before reading anything and nothing is fetched. Prompted by Ajax Vale's review, with Shaz ([@ajxvale](https://github.com/ajxvale)), together with the Windows fix in 1.5.3.

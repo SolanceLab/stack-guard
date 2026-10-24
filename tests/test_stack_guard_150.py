@@ -11,7 +11,7 @@ import sys
 import unittest
 from unittest import mock
 
-from test_stack_guard import Base, FakeNet, HERE
+from test_stack_guard import Base, FakeNet, HERE, POSIX_ONLY
 import stack_guard as sg
 
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
@@ -237,6 +237,14 @@ class CommittedSecrets(GitBase):
         _, md, _ = self.check()
         self.assertIn("None found in the usual secret files.", self.section(md))
 
+    def test_only_the_ca_bundle_is_skipped_inside_vendored_folders(self):
+        for rel in ("lib/site-packages/certifi/cacert.pem", ".venv/cacert.pem", "cacert.pem"):
+            self.assertFalse(sg.secret_file_name(rel), rel)
+        for rel in ("deployment/venv/.env", "node_modules/private-package/.npmrc", ".venv/service.key", ".venv/lib/python3/site-packages/pkg/.env"):
+            self.assertTrue(sg.secret_file_name(rel), rel)
+        self.assertTrue(sg.secret_file_name("app/.env"))
+        self.assertTrue(sg.secret_file_name("deploy.pem"))
+
     def test_env_file_literal_found(self):
         write(os.path.join(self.folder, "api", ".env"), "PORT=3000\nSECRET_KEY=%s\nEMPTY=\nREF=${PORT}\n" % CANARY)
         self.commit()
@@ -335,6 +343,7 @@ class CommittedSecrets(GitBase):
         self.assertIn("could not be parsed", md.split("## Not checked")[1])
 
 
+@POSIX_ONLY  # the stand-in tools are /bin/sh scripts
 class StandaloneTools(Base):
     def setUp(self):
         super().setUp()
@@ -472,7 +481,7 @@ class DeployRuntimeAndVersion(unittest.TestCase):
             self.assertIn("deploy-runtime check: passed / failed / not possible", fh.read())
 
     def test_all_manifests_say_the_script_version(self):
-        self.assertEqual(sg.VERSION, "1.5.4")
+        self.assertEqual(sg.VERSION, "1.5.5")
         for rel in (("plugins", "stack-guard", ".claude-plugin", "plugin.json"), ("plugins", "stack-guard", ".codex-plugin", "plugin.json")):
             with open(os.path.join(ROOT, *rel), encoding="utf-8") as fh:
                 self.assertEqual(json.load(fh)["version"], sg.VERSION)
@@ -486,11 +495,14 @@ class DeployRuntimeAndVersion(unittest.TestCase):
 
 class WindowsPythonInHooks(unittest.TestCase):
     def commands(self):
-        hooks = json.load(open(os.path.join(PLUGIN, "hooks", "hooks.json")))["hooks"]
+        with open(os.path.join(PLUGIN, "hooks", "hooks.json"), encoding="utf-8") as fh:
+            hooks = json.load(fh)["hooks"]
         return [h["command"] for es in hooks.values() for e in es for h in e["hooks"]]
 
     def run_with(self, command, os_name, names):
         import subprocess, tempfile
+        if os.name != "posix":
+            self.skipTest("the hook launcher is tried through /bin/sh")
         d = tempfile.mkdtemp()
         log = os.path.join(d, "ran")
         for n in names:
@@ -502,7 +514,10 @@ class WindowsPythonInHooks(unittest.TestCase):
         if os_name:
             env["OS"] = os_name
         subprocess.run(["sh", "-c", command], env=env, input="{}", text=True, capture_output=True, timeout=20)
-        return open(log).read().split() if os.path.exists(log) else []
+        if not os.path.exists(log):
+            return []
+        with open(log) as fh:
+            return fh.read().split()
 
     def test_every_hook_picks_python_on_windows_and_python3_elsewhere(self):
         for c in self.commands():

@@ -33,6 +33,7 @@ import plistlib
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import tempfile
 import sys
@@ -63,7 +64,7 @@ DEFAULT_TIME = "09:00"
 LABEL = "dev.stack-guard.watch"
 SECRET_WORD = re.compile(r"token|key|secret|password|auth", re.I)
 OSV_BATCH = "https://api.osv.dev/v1/querybatch"
-VERSION = "1.5.4"
+VERSION = "1.5.5"
 EOL_URL = "https://endoflife.date/api/%s.json"
 SKIP_DIRS = {"node_modules", "venv", "dist", "build", "worktrees", "__pycache__"}  # dot-folders are skipped too
 LATEST_URL = "https://raw.githubusercontent.com/SolanceLab/stack-guard/main/.claude-plugin/marketplace.json"
@@ -390,8 +391,11 @@ def npm_provably_public(name, resolved):
     return not name.startswith("@") or name.split("/", 1)[0] in PUBLIC_NPM_SCOPES
 
 
+PYTHON_CONFIG_ENV_NAMES = ("PIP_CONFIG_FILE", "UV_CONFIG_FILE")
+PYTHON_INDEX_ENV_NAMES = ("PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL", "PIP_FIND_LINKS", "PIP_NO_INDEX",
+                          "UV_INDEX_URL", "UV_EXTRA_INDEX_URL", "UV_DEFAULT_INDEX", "UV_INDEX",
+                          "UV_FIND_LINKS", "UV_NO_INDEX")
 INDEX_FLAG = re.compile(r"^\s*(--index-url|--extra-index-url|-i|--find-links|-f|--no-index)(\s|=|$)", re.I)
-INDEX_ENV = re.compile(r"^\s*(?:export\s+)?(?:(?:PIP|UV)_(?:EXTRA_)?INDEX_URL|PIP_FIND_LINKS|UV_FIND_LINKS|PIP_NO_INDEX)\s*=", re.M)
 
 
 def norm_py(name):
@@ -407,6 +411,158 @@ def non_registry_name(line):
         return None
     m = re.match(r"^([A-Za-z0-9][A-Za-z0-9_.\-]*)\s*(?:\[[^\]]*\])?\s*@", line) or re.search(r"[#&]egg=([A-Za-z0-9_.\-]+)", line)
     return norm_py(m.group(1)) if m else "?"
+
+
+# ---- a private Python index set for the whole computer (not only in the project)
+
+PUBLIC_INDEX_HOSTS = {"pypi.org", "files.pythonhosted.org"}
+INDEX_CONF_KEYS = {"index-url", "extra-index-url", "find-links", "default-index"}
+INDEX_ENV_PREFIXES = (("POETRY_REPOSITORIES_", "_URL"), ("POETRY_SOURCE_", ""))
+SYSTEM_INDEX_FILES = ("/etc/pip.conf", "/Library/Application Support/pip/pip.conf", "/etc/uv/uv.toml")
+
+
+def public_python_url(value):
+    """True only for an unambiguous HTTPS URL at a known public Python package host."""
+    try:
+        parsed = urlparse(str(value).strip())
+        return (parsed.scheme == "https" and parsed.hostname in PUBLIC_INDEX_HOSTS
+                and not parsed.username and not parsed.password)
+    except ValueError:
+        return False
+
+
+def index_value_private(value):
+    """True when a setting names anything but a public PyPI address (or names nothing). Only the address is looked at;
+    nothing is kept."""
+    toks = re.findall(r"[^\s,\"'\[\]]+", str(value))
+    if not toks:
+        return True
+    for tok in toks:
+        if "=" in tok and "://" in tok.split("=", 1)[1]:
+            tok = tok.split("=", 1)[1]  # uv `name=url`
+        if not public_python_url(tok):
+            return True
+    return False
+
+
+def private_python_index_settings(items):
+    """Whether pip/uv settings remove positive proof that names are public. Values are inspected but never retained."""
+    for name, raw in items:
+        value = str(raw).strip().strip("'\"")
+        if name.endswith("NO_INDEX"):
+            if value.lower() not in ("0", "false", "no", "off"):  # pip: an empty value is not false
+                return True
+            continue
+        try:
+            values = shlex.split(value)
+        except ValueError:
+            return True
+        if not values or any(not public_python_url(v) for v in values):
+            return True
+    return False
+
+
+def dotenv_index_value(raw):
+    """A dotenv value without an unquoted inline comment. Quoted `#` characters remain part of the value."""
+    value = str(raw).strip()
+    try:
+        lex = shlex.shlex(value, posix=True)
+        lex.whitespace_split = True
+        lex.commenters = "#"
+        return " ".join(lex)
+    except ValueError:
+        return value  # malformed quoting is classified conservatively as private by the caller
+
+
+def index_conf_private(text):
+    """True when a pip, uv or Poetry config text sets a private index. Reads keys and the host of each address only."""
+    entries, section = [], ""
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line[0] in "#;":
+            continue
+        head = re.match(r"^\[+\s*([^\]]*?)\s*\]+", line)
+        if head:
+            section = head.group(1).lower()
+            entries.append([section, None, ""])
+            continue
+        kv = re.match(r"^([A-Za-z0-9_.\-]+)\s*[=:]\s*(.*)$", line)
+        key = kv.group(1).lower().replace("_", "-") if kv else ""
+        if kv and (not raw[:1].isspace() or key in INDEX_CONF_KEYS | {"no-index", "url"}):
+            entries.append([section, key, kv.group(2)])
+        elif entries:
+            entries[-1][2] += " " + line  # an indented or array continuation line
+    repos_seen, repos_with_url = set(), set()
+    for sec, key, val in entries:
+        if sec.startswith("repositories"):
+            repos_seen.add(sec)
+        if key is None:
+            continue
+        if key in INDEX_CONF_KEYS or (sec == "index" and key == "url"):
+            if index_value_private(val):
+                return True
+        elif key == "no-index" and val.strip().lower() not in ("", "false", "0", "no", "off"):
+            return True
+        elif sec.startswith("repositories") and key == "url":
+            repos_with_url.add(sec)
+            if index_value_private(val):
+                return True
+    return bool(repos_seen - repos_with_url)
+
+
+def global_index_files():
+    home = home_dir()
+    files = [os.path.join(home, ".config", "pip", "pip.conf"), os.path.join(home, ".pip", "pip.conf"),
+             os.path.join(home, "Library", "Application Support", "pip", "pip.conf"),
+             os.path.join(home, ".config", "uv", "uv.toml"),
+             os.path.join(home, ".config", "pypoetry", "config.toml"),
+             os.path.join(home, "Library", "Application Support", "pypoetry", "config.toml")]
+    files += list(SYSTEM_INDEX_FILES)
+    xdg_home = os.environ.get("XDG_CONFIG_HOME")  # pip, uv and Poetry honour a moved config folder
+    if xdg_home:
+        files += [os.path.join(xdg_home, "pip", "pip.conf"), os.path.join(xdg_home, "uv", "uv.toml"),
+                  os.path.join(xdg_home, "pypoetry", "config.toml")]
+    for d in (os.environ.get("XDG_CONFIG_DIRS") or "/etc/xdg").split(os.pathsep):
+        if d:
+            files += [os.path.join(d, "pip", "pip.conf"), os.path.join(d, "uv", "uv.toml")]
+    env = os.environ
+    if env.get("APPDATA"):
+        files += [os.path.join(env["APPDATA"], "pip", "pip.ini"), os.path.join(env["APPDATA"], "uv", "uv.toml"),
+                  os.path.join(env["APPDATA"], "pypoetry", "config.toml")]
+    if env.get("PROGRAMDATA"):
+        files += [os.path.join(env["PROGRAMDATA"], "pip", "pip.ini"), os.path.join(env["PROGRAMDATA"], "uv", "uv.toml")]
+    if env.get("VIRTUAL_ENV"):
+        files += [os.path.join(env["VIRTUAL_ENV"], "pip.ini"), os.path.join(env["VIRTUAL_ENV"], "pip.conf")]
+    if env.get("POETRY_CONFIG_DIR"):
+        files.append(os.path.join(env["POETRY_CONFIG_DIR"], "config.toml"))
+    if os.environ.get("PIP_CONFIG_FILE"):
+        files.append(os.environ["PIP_CONFIG_FILE"])
+    return files
+
+
+def global_private_index():
+    """True when a private Python package index is set for the whole computer (environment or a user/system config
+    file). Then no PyPI name leaves this computer. Hosts and addresses are classified and dropped, never stored.
+    Read fresh on each call (a few small files), so a changed setting is never missed."""
+    env = os.environ
+    if private_python_index_settings((n, env[n]) for n in PYTHON_INDEX_ENV_NAMES if n in env):
+        return True
+    for name in PYTHON_CONFIG_ENV_NAMES:  # a chosen config file is read; unreadable or missing counts as private (privacy first)
+        value = env.get(name, "").strip().strip("'\"")
+        if value and os.path.normcase(os.path.abspath(os.path.expanduser(value))) != os.path.normcase(os.path.abspath(os.devnull)):
+            try:
+                with open(os.path.expanduser(value), encoding="utf-8", errors="replace") as fh:
+                    if index_conf_private(fh.read()):
+                        return True
+            except OSError:
+                return True
+    for name, value in env.items():
+        if value and any(name.startswith(a) and name.endswith(b) for a, b in INDEX_ENV_PREFIXES) and index_value_private(value):
+            return True
+    for path in global_index_files():
+        if os.path.isfile(path) and index_conf_private(read_text(path)):  # shortcut: a file read error counts as no setting
+            return True
+    return False
 
 
 def parse_requirements(path, fn, proj):
@@ -434,7 +590,7 @@ def parse_pyproject(path, proj):
     text is only searched for index sections and the dependency names are not read."""
     text = read_text(path)
     if re.search(r"^\s*\[\[?tool\.(poetry\.source|uv\.index|pdm\.source)\]\]?\s*$", text, re.M) \
-            or re.search(r"^\s*(index-url|extra-index-url|find-links)\s*=", text, re.M):
+            or re.search(r"^\s*(index-url|extra-index-url|find-links|default-index)\s*=", text, re.M):
         proj["private_index"] = True
     if tomllib is None:
         return
@@ -553,8 +709,13 @@ def handle_file(dirpath, fn, rel, proj, inv):
         parse_package_json(path, label, proj, inv)
     elif fn == "pyproject.toml":
         parse_pyproject(path, proj)
+    elif fn in ("uv.toml", "poetry.toml"):
+        if index_conf_private(read_text(path)):  # addresses are classified here and never kept
+            proj["private_index"] = True
     elif fn.startswith(".env"):
-        if INDEX_ENV.search(read_text(path)):  # the variable's name is looked for; its value is never kept
+        settings = [(m.group(1), dotenv_index_value(m.group(2))) for m in re.finditer(
+            r"^\s*(?:export\s+)?(" + "|".join(PYTHON_INDEX_ENV_NAMES) + r")\s*=\s*([^\r\n]*)", read_text(path), re.M)]
+        if private_python_index_settings(settings):  # each value is classified here and never kept
             proj["private_index"] = True
     elif low in ("wrangler.toml", "wrangler.jsonc", "wrangler.json"):
         m = re.search(r'^\s*name\s*=\s*"([^"]+)"' if low.endswith(".toml") else r'"name"\s*:\s*"([^"]+)"',
@@ -569,6 +730,27 @@ def handle_file(dirpath, fn, rel, proj, inv):
         proj["deploy"].append(fn)
 
 
+INPUT_NAMES = {"package-lock.json", "pnpm-lock.yaml", "yarn.lock", "poetry.lock", "uv.lock", "Pipfile.lock", "package.json",
+               "pyproject.toml", "uv.toml", "poetry.toml", "wrangler.toml", "wrangler.jsonc", "wrangler.json", "fly.toml", "Dockerfile", "vercel.json",
+               "netlify.toml", "render.yaml", "railway.json", "Procfile"}
+
+
+def is_input_file(fn):
+    """A file name scan_projects would open (lockfiles, manifests, requirements, deploy configs, .env files)."""
+    return fn in INPUT_NAMES or fn.lower() in INPUT_NAMES or bool(re.fullmatch(r"requirements.*\.txt", fn)) or fn.startswith(".env")
+
+
+def note_outside(path, root, inv):
+    """True (and a "Not checked" note kept) when a file's real location is outside the scanned folder, so it is not opened."""
+    if is_inside(path, root):
+        return False
+    inv.setdefault("outside", []).append(safe_path(os.path.relpath(path, root).replace(os.sep, "/")))
+    return True
+
+
+OUTSIDE_NOTE = "`%s` points outside the scanned folder, so it was not read."
+
+
 def new_project(rel):
     return {"path": rel, "lockfiles": [], "packages": [], "deploy": [], "not_parsed": [], "runtimes": [], "direct_npm": [], "private_npm": [],
             "direct_pypi": [], "private_py": [], "private_index": False}
@@ -578,10 +760,23 @@ def venv_python_version(venv_dir):
     """Python version of a virtualenv, read from its pyvenv.cfg. Nothing inside the scanned folder is ever executed:
     a cloned or hostile repo controls those files, so running its .venv/bin/python would run its code."""
     cfg = os.path.join(venv_dir, "pyvenv.cfg")
-    if not os.path.isfile(cfg) or os.path.islink(cfg):
+    if not os.path.isfile(cfg) or is_link(cfg):
         return None
     m = re.search(r"^\s*version(?:_info)?\s*=\s*(\d+\.\d+(?:\.\d+)?)", read_text(cfg), re.M)
     return m.group(1) if m else None
+
+
+def is_link(path):
+    """True for a symbolic link or a Windows junction (a junction is a folder link that os.path.islink does not report)."""
+    if os.path.islink(path):
+        return True
+    junction = getattr(os.path, "isjunction", None)  # Python 3.12+
+    if junction:
+        return junction(path)
+    try:  # older Pythons on Windows: a mount-point reparse tag is a junction
+        return getattr(os.lstat(path), "st_reparse_tag", 0) == getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", -1)
+    except OSError:
+        return False
 
 
 def is_inside(path, root):
@@ -625,11 +820,28 @@ def lockfile_below(folder):
     return False
 
 
+def ancestors(rel):
+    parts = rel.split(os.sep)
+    return ["."] + [os.sep.join(parts[:i]) for i in range(1, len(parts))]
+
+
 def scan_projects(root, inv):
+    private_dirs = set()  # folders whose index settings reach every folder below them, even when they hold no project
     for dirpath, dirnames, filenames in os.walk(root):
         rel = os.path.relpath(dirpath, root)
         depth = 0 if rel == "." else rel.count(os.sep) + 1
-        kept = sorted(d for d in dirnames if not d.startswith(".") and d not in SKIP_DIRS)
+        kept = []
+        for d in sorted(d for d in dirnames if not d.startswith(".") and d not in SKIP_DIRS):
+            full = os.path.join(dirpath, d)
+            if is_link(full):  # a linked folder is never walked
+                target = os.path.realpath(full)
+                parts = os.path.relpath(target, os.path.realpath(root)).split(os.sep) if is_inside(target, root) else None
+                walked = parts is not None and not any(x.startswith(".") or x in SKIP_DIRS for x in parts if x != ".")
+                if not walked:  # quiet only when the real folder is scanned at its own place
+                    label = d if rel == "." else "%s/%s" % (rel.replace(os.sep, "/"), d)
+                    inv["unreadable"].append(safe_path(label) + "/ (symbolic-link directory was not scanned)")
+            else:
+                kept.append(d)
         if depth >= MAX_DEPTH:
             for d in kept:
                 if lockfile_below(os.path.join(dirpath, d)):
@@ -639,7 +851,13 @@ def scan_projects(root, inv):
         dirnames[:] = kept
         proj = new_project(rel)
         for fn in sorted(filenames):
+            if is_input_file(fn) and note_outside(os.path.join(dirpath, fn), root, inv):
+                continue
             handle_file(dirpath, fn, rel, proj, inv)
+        if rel != "." and any(a in private_dirs for a in ancestors(rel)):  # an ancestor's index setting covers this folder too
+            proj["private_index"] = True
+        if proj["private_index"]:
+            private_dirs.add(rel)
         if proj["lockfiles"] or proj["deploy"] or proj["packages"]:
             for venv in (".venv", "venv"):
                 v = venv_python_version(os.path.join(dirpath, venv))
@@ -733,6 +951,8 @@ def scan_mcp(root, inv):
     for path, label, nested in files:
         if not os.path.exists(path):
             continue
+        if path.startswith(root + os.sep) and note_outside(path, root, inv):
+            continue  # a project file that points outside the scanned folder; the user-level configs stay trusted
         data = load_json(path, inv, label)
         if not isinstance(data, dict):
             continue
@@ -790,7 +1010,7 @@ def scan_tools(root, inv):
         return
     for env in envs:
         d = os.path.join(out, env)
-        if os.path.islink(d) or not os.path.isdir(d):
+        if is_link(d) or not os.path.isdir(d):
             continue
         found = {}
         sites = glob.glob(os.path.join(d, "lib", "python*", "site-packages")) + [os.path.join(d, "Lib", "site-packages")]
@@ -856,13 +1076,16 @@ PLACEHOLDER_FORMS = re.compile(r"(?:<[^<>]*>|your[-_ ][\w\- ]*(?:here|key|token|
 GIT_ENV_EXTRA = {"GIT_NO_LAZY_FETCH": "1", "GIT_TERMINAL_PROMPT": "0", "GIT_CONFIG_NOSYSTEM": "1", "GIT_ASKPASS": "", "SSH_ASKPASS": ""}
 
 
+PUBLIC_BUNDLES = {"cacert.pem"}  # a public CA certificate bundle shipped inside packages; the only tracked file skipped by name, so a secret in a .venv or node_modules folder is still checked
+
+
 def secret_file_name(path):
     """True for a path that is one of the usual secret files and not a test canary or an example file."""
     parts = path.replace("\\", "/").split("/")
     if any(seg.lower() in TEST_SEGMENTS for seg in parts[:-1]):
         return False
     base = parts[-1].lower()
-    if base in ENV_EXAMPLES:
+    if base in ENV_EXAMPLES or base in PUBLIC_BUNDLES:
         return False
     return any(fnmatch.fnmatch(base, pat) for pat in SECRET_FILE_PATTERNS)
 
@@ -1003,7 +1226,7 @@ def scan_committed_secrets(root, inv):
     dirs = [root] + [os.path.join(root, p["path"]) for p in inv["projects"] if p["path"] not in (".", "")]
     scanned, seen_files = [], set()
     for d in dirs:
-        if not os.path.isdir(d) or os.path.islink(d):
+        if not os.path.isdir(d) or is_link(d):
             continue
         shown = os.path.relpath(d, root)
         err = []
@@ -1037,7 +1260,7 @@ def scan_committed_secrets(root, inv):
             if key in seen_files:
                 continue
             seen_files.add(key)
-            if os.path.islink(full):
+            if is_link(full):
                 continue
             # the committed copy (HEAD), never the working folder: an uncommitted edit or a newly staged file was not committed
             status, text = read_blob(git, d, "HEAD:./%s" % rel)
@@ -1111,7 +1334,7 @@ def committed_lines(res):
 def build_inventory(folder):
     root = os.path.abspath(folder)
     inv = {"generated": today(), "folder": os.path.basename(root), "projects": [], "mcp": [],
-           "runtimes": [], "unreadable": [], "too_deep": [], "tools": [], "tool_envs": []}
+           "runtimes": [], "unreadable": [], "too_deep": [], "tools": [], "tool_envs": [], "outside": []}
     scan_projects(root, inv)
     scan_mcp(root, inv)
     scan_tools(root, inv)
@@ -1136,7 +1359,7 @@ def state_dir(folder, *parts):
     d = os.path.abspath(folder)
     for part in (STATE_DIR,) + parts:
         d = os.path.join(d, part)
-        if os.path.islink(d):
+        if is_link(d):
             raise ValueError("Refusing to write: %s is a symbolic link. Remove it and run again." % d)
         os.makedirs(d, exist_ok=True)
         if part == STATE_DIR:
@@ -1150,7 +1373,7 @@ def write_file(path, text, append=False):
     """Write without following a symlink at the destination: a new private temp file, then rename over it
     (a rename replaces a link itself, never its target). Append refuses a link."""
     if append:
-        if os.path.islink(path):
+        if is_link(path):
             raise ValueError("Refusing to write: %s is a symbolic link." % path)
         old = read_text(path)
         text = old + text
@@ -1210,6 +1433,7 @@ def render_inventory(inv):
     skipped = ["`%s`: %s" % (p["path"], n) for p in inv["projects"] for n in p["not_parsed"]]
     skipped += ["`%s`: could not be read" % u for u in inv["unreadable"]]
     skipped += ["folder deeper than %d levels: `%s`" % (MAX_DEPTH, d) for d in inv.get("too_deep", [])]
+    skipped += [OUTSIDE_NOTE % o for o in inv.get("outside", [])]
     if skipped:
         L += ["", "## Not parsed or unreadable", ""] + ["- " + s for s in skipped]
     return "\n".join(L) + "\n"
@@ -1313,10 +1537,11 @@ def collect_targets(inv, stats=None):
     """Packages to look up. Private npm and PyPI names never leave the machine (not even to OSV); names or versions that
     fail the grammar are dropped. stats, when given, receives the counts: {"private": n, "invalid": n}."""
     t = []
-    private_seen, invalid = set(), 0
+    private_seen, invalid, by_computer = set(), 0, 0
     private_all = {n for p in inv["projects"] for n in p["private_npm"]}
     private_py_all = {n for p in inv["projects"] for n in p.get("private_py", [])}
     proven = lockfile_public_npm(inv)
+    computer_index = global_private_index()
     for p in inv["projects"]:
         for x in p["packages"]:
             if re.match(r"\d", x["version"]):
@@ -1324,8 +1549,9 @@ def collect_targets(inv, stats=None):
                     private_seen.add(x["name"])
                     continue
                 # PyPI: a direct-URL, git or path source, or any package of a project with a private index, may be a private name
-                if x["ecosystem"] == "PyPI" and (p.get("private_index") or norm_py(x["name"]) in private_py_all):
+                if x["ecosystem"] == "PyPI" and (p.get("private_index") or computer_index or norm_py(x["name"]) in private_py_all):
                     private_seen.add(norm_py(x["name"]))
+                    by_computer += computer_index
                     continue
                 if not (valid_name(x["ecosystem"], x["name"]) and valid_version(x["version"])):
                     invalid += 1
@@ -1339,14 +1565,24 @@ def collect_targets(inv, stats=None):
             if k["ecosystem"] == "npm" and (k["name"] in private_all or not (npm_name_public(k["name"]) or k["name"] in proven)):
                 private_seen.add(k["name"])
                 continue
+            if k["ecosystem"] == "PyPI" and computer_index:
+                private_seen.add(norm_py(k["name"]))
+                by_computer += 1
+                continue
             if not (valid_name(k["ecosystem"], k["name"]) and valid_version(k["version"].lstrip("v"))):
                 invalid += 1
                 continue
             t.append({"ecosystem": k["ecosystem"], "name": k["name"], "version": k["version"].lstrip("v"),
                       "project": "MCP server %s" % m["name"], "dev": False, "deploy": False})
-    t += tool_targets(inv)
+    for x in tool_targets(inv):
+        if x["ecosystem"] == "PyPI" and computer_index:
+            private_seen.add(norm_py(x["name"]))
+            by_computer += 1
+        else:
+            t.append(x)
     if stats is not None:
         stats["private"], stats["invalid"] = len(private_seen), invalid
+        stats["computer_index"] = bool(by_computer)
     return t
 
 
@@ -1437,7 +1673,8 @@ def skip_notes(skipped):
     """Counts only, never names: private packages stay on this computer, invalid names are dropped."""
     out = []
     if skipped and skipped.get("private"):
-        out.append("private packages (kept on this computer, not looked up online): %d" % skipped["private"])
+        why = " (a private Python index is set on this computer)" if skipped.get("computer_index") else ""
+        out.append("private packages (kept on this computer, not looked up online): %d%s" % (skipped["private"], why))
     if skipped and skipped.get("invalid"):
         out.append("%d names skipped: not a valid package name" % skipped["invalid"])
     return out
@@ -1450,6 +1687,7 @@ def make_report(inv, findings, errors, osv_ok, skipped=None):
         c[f["severity"]] += 1
     unreadable = ["%s could not be read" % u for u in inv["unreadable"]]
     unreadable += ["folder deeper than %d levels: %s" % (MAX_DEPTH, d) for d in inv.get("too_deep", [])]
+    unreadable += [OUTSIDE_NOTE % o for o in inv.get("outside", [])]
     not_parsed = ["%s: %s" % (p["path"], n) for p in inv["projects"] for n in p["not_parsed"]]
     return {"date": today(), "folder": inv["folder"], "osv_ok": osv_ok, "findings": findings or [],
             "runtimes": [r for r in inv["runtimes"] if r["version"]],

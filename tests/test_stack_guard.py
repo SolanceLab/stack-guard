@@ -3,6 +3,7 @@
 import io
 import json
 import os
+import re
 import plistlib
 import shlex
 import shutil
@@ -20,6 +21,31 @@ REAL_NOTIFY = sg.notify_desktop  # Base replaces sg.notify_desktop with a Mock
 VULNS = {"lodash": ["GHSA-aaaa-bbbb-cccc"], "requests": ["GHSA-dddd-eeee-ffff"]}
 FIX = os.path.join(HERE, "fixtures")
 SECRET = "SECRET-VALUE-123"
+
+
+POSIX_ONLY = unittest.skipUnless(os.name == "posix", "needs POSIX file modes and a /bin/sh")
+_SYMLINKS = []
+
+
+def symlinks_permitted():
+    """Whether this computer lets the tests make symbolic links (Windows needs Developer Mode or an elevated shell)."""
+    if not _SYMLINKS:
+        d = tempfile.mkdtemp()
+        try:
+            os.symlink(d, os.path.join(d, "probe"))
+            _SYMLINKS.append(True)
+        except (OSError, NotImplementedError):  # WinError 1314: the privilege is not held
+            _SYMLINKS.append(False)
+        finally:
+            shutil.rmtree(d, True)
+    return _SYMLINKS[0]
+
+
+def symlink(target, link):
+    """os.symlink for tests: skips the test, with a reason, where links are not permitted; marks folder targets on Windows."""
+    if not symlinks_permitted():
+        raise unittest.SkipTest("symlinks not permitted here")
+    os.symlink(target, link, target_is_directory=os.path.isdir(target))
 
 
 def fixture(name):
@@ -76,6 +102,16 @@ class Base(unittest.TestCase):
             p.start()
             self.addCleanup(p.stop)
         self.net = sg.http_json
+        # a package index set on the machine running the tests must not change what they see
+        clean = {k: v for k, v in os.environ.items() if not re.match(r"(PIP_|UV_|POETRY_)", k) and k != "APPDATA"}
+        p = mock.patch.dict(os.environ, clean, clear=True)
+        p.start()
+        self.addCleanup(p.stop)
+        p = mock.patch.object(sg, "SYSTEM_INDEX_FILES", ())
+        p.start()
+        self.addCleanup(p.stop)
+        sg._global_index = None
+        self.addCleanup(setattr, sg, "_global_index", None)
 
     def run_main(self, *args):
         with mock.patch("sys.stdout") as out:
@@ -128,6 +164,102 @@ class InventoryTests(Base):
         before = set(os.listdir(self.folder))
         self.run_main("inventory", self.folder)
         self.assertEqual(set(os.listdir(self.folder)) - before, {".stack-guard", "STACK-INVENTORY.md"})
+
+    def test_symlinked_project_inputs_outside_root_are_not_read(self):
+        outside = os.path.join(self.tmp, "outside")
+        os.makedirs(outside)
+        req_secret, npm_secret = "private-python-name", "private-npm-name"
+        with open(os.path.join(outside, "requirements.txt"), "w") as fh:
+            fh.write(req_secret + "==1.0.0\n")
+        with open(os.path.join(outside, "package-lock.json"), "w") as fh:
+            json.dump({"packages": {"node_modules/" + npm_secret: {"version": "1.0.0", "resolved": "https://registry.npmjs.org/x"}}}, fh)
+        os.makedirs(os.path.join(self.folder, "linked"))
+        symlink(os.path.join(outside, "requirements.txt"), os.path.join(self.folder, "linked", "requirements.txt"))
+        symlink(os.path.join(outside, "package-lock.json"), os.path.join(self.folder, "linked", "package-lock.json"))
+
+        inv = sg.build_inventory(self.folder)
+        serialized = json.dumps(inv)
+        self.assertNotIn(req_secret, serialized)
+        self.assertNotIn(npm_secret, serialized)
+        # one note per file, in the "points outside the scanned folder" wording
+        self.assertEqual(sorted(x for x in inv["outside"] if x.startswith("linked/")),
+                         ["linked/package-lock.json", "linked/requirements.txt"])
+        self.assertFalse({req_secret, npm_secret} & {x["name"] for x in sg.collect_targets(inv)})
+        report = sg.make_report(inv, [], [], True)
+        self.assertIn(sg.OUTSIDE_NOTE % "linked/requirements.txt", report["not_checked"])
+        self.assertIn(sg.OUTSIDE_NOTE % "linked/package-lock.json", report["not_checked"])
+
+    def test_symlinked_project_directory_is_reported_without_traversal(self):
+        outside = os.path.join(self.tmp, "outside-project")
+        os.makedirs(outside)
+        secret_name = "outside-directory-private-name"
+        with open(os.path.join(outside, "requirements.txt"), "w") as fh:
+            fh.write(secret_name + "==1.0.0\n")
+        symlink(outside, os.path.join(self.folder, "linked-project"))
+
+        inv = sg.build_inventory(self.folder)
+        self.assertNotIn(secret_name, json.dumps(inv))
+        self.assertIn("linked-project/ (symbolic-link directory was not scanned)", inv["unreadable"])
+        self.assertNotIn(secret_name, {x["name"] for x in sg.collect_targets(inv)})
+
+    def test_python_index_environment_suppresses_names_without_retaining_values(self):
+        secret_name = "environment-private-package"
+        req = os.path.join(self.folder, "api", "requirements.txt")
+        with open(req, "a") as fh:
+            fh.write(secret_name + "==1.2.3\n")
+        private_cases = {
+            "PIP_INDEX_URL": "https://private.example/simple/SECRET-INDEX",
+            "PIP_EXTRA_INDEX_URL": "not a url SECRET-INDEX",
+            "PIP_FIND_LINKS": "https://files.pythonhosted.org https://private.example/SECRET-INDEX",
+            "PIP_NO_INDEX": "1",
+            "UV_INDEX_URL": "https://private.example/simple/SECRET-INDEX",
+            "UV_EXTRA_INDEX_URL": "",
+            "UV_DEFAULT_INDEX": "https://private.example/simple/SECRET-INDEX",
+            "UV_INDEX": "internal=https://private.example/simple/SECRET-INDEX",
+            "UV_FIND_LINKS": "./SECRET-INDEX",
+            "UV_NO_INDEX": "yes",
+            "PIP_CONFIG_FILE": "./SECRET-INDEX/pip.conf",
+            "UV_CONFIG_FILE": "./SECRET-INDEX/uv.toml",
+        }
+        for name, value in private_cases.items():
+            with self.subTest(name=name), mock.patch.dict(os.environ, {name: value}):
+                inv = sg.build_inventory(self.folder)
+                inv["mcp"].append({"name": "private-mcp", "package": {"ecosystem": "PyPI", "name": "mcp-private-name", "version": "1.0"}})
+                stats = {}
+                target_names = {x["name"] for x in sg.collect_targets(inv, stats)}
+                self.assertNotIn(secret_name, target_names)
+                self.assertNotIn("mcp-private-name", target_names)
+                self.assertGreater(stats["private"], 0)
+                self.assertNotIn("SECRET-INDEX", json.dumps(inv))
+
+    def test_known_public_python_index_environment_preserves_pypi_targets(self):
+        public = {"PIP_INDEX_URL": "https://pypi.org/simple", "PIP_EXTRA_INDEX_URL": "https://files.pythonhosted.org/packages",
+                  "PIP_FIND_LINKS": "https://files.pythonhosted.org", "PIP_NO_INDEX": "false",
+                  "UV_INDEX_URL": "https://pypi.org/simple/", "UV_EXTRA_INDEX_URL": "https://pypi.org/simple",
+                  "UV_DEFAULT_INDEX": "https://pypi.org/simple", "UV_INDEX": "https://pypi.org/simple",
+                  "UV_FIND_LINKS": "https://files.pythonhosted.org/packages", "UV_NO_INDEX": "0"}
+        with mock.patch.dict(os.environ, public):
+            inv = sg.build_inventory(self.folder)
+            self.assertIn("requests", {x["name"] for x in sg.collect_targets(inv)})
+
+    def test_public_dotenv_index_with_inline_comment_stays_public(self):
+        with open(os.path.join(self.folder, "api", ".env.index"), "w") as fh:
+            fh.write('PIP_INDEX_URL="https://pypi.org/simple" # public index\nPIP_NO_INDEX=false # keep online\n')
+        inv = sg.build_inventory(self.folder)
+        api = next(p for p in inv["projects"] if p["path"] == "api")
+        self.assertFalse(api["private_index"])
+        self.assertIn("requests", {x["name"] for x in sg.collect_targets(inv)})
+
+    def test_python_config_file_devnull_does_not_suppress_public_names(self):
+        with mock.patch.dict(os.environ, {"PIP_CONFIG_FILE": os.devnull, "UV_CONFIG_FILE": os.devnull}):
+            inv = sg.build_inventory(self.folder)
+            self.assertIn("requests", {x["name"] for x in sg.collect_targets(inv)})
+
+    def test_a_second_public_looking_host_or_plain_http_counts_as_private(self):
+        for value in ("https://test.pypi.org/simple", "http://pypi.org/simple", "https://user:pw@pypi.org/simple"):
+            with mock.patch.dict(os.environ, {"PIP_INDEX_URL": value}):
+                inv = sg.build_inventory(self.folder)
+                self.assertEqual([t for t in sg.collect_targets(inv) if t["ecosystem"] == "PyPI"], [], value)
 
 
 class SeverityTests(unittest.TestCase):
@@ -212,6 +344,7 @@ class WebhookTests(Base):
                     "https://discord.com/other"):
             self.assertIsNone(sg.webhook_kind(bad), bad)
 
+    @POSIX_ONLY
     def test_secret_lives_outside_the_project_with_mode_600(self):
         self.store()
         path = sg.webhook_file(self.folder)
@@ -426,15 +559,32 @@ class SymlinkTests(Base):
             t = os.path.join(self.outside, name)
             with open(t, "w") as fh:
                 fh.write("original\n")
-            os.symlink(t, os.path.join(self.folder, name))
+            symlink(t, os.path.join(self.folder, name))
             targets[name] = t
         self.run_main("check", self.folder)
         for t in targets.values():
             with open(t) as fh:
                 self.assertEqual(fh.read(), "original\n")
 
+    @unittest.skipUnless(sys.platform == "win32", "junctions exist only on Windows")
+    def test_junction_to_outside_is_not_walked_or_followed(self):
+        import _winapi
+        outside = os.path.join(self.tmp, "outside-junction")
+        os.makedirs(outside)
+        with open(os.path.join(outside, "requirements.txt"), "w") as fh:
+            fh.write("junction-private-name==1.0.0\n")
+        link = os.path.join(self.folder, "junction-project")
+        _winapi.CreateJunction(outside, link)
+        self.assertTrue(sg.is_link(link))
+        inv = sg.build_inventory(self.folder)
+        self.assertNotIn("junction-private-name", json.dumps(inv))
+
+    def test_a_plain_folder_is_not_a_link(self):
+        self.assertFalse(sg.is_link(self.folder))
+        self.assertFalse(sg.is_link(os.path.join(self.folder, "no-such-folder")))
+
     def test_symlinked_state_folder_is_refused(self):
-        os.symlink(self.outside, os.path.join(self.folder, ".stack-guard"))
+        symlink(self.outside, os.path.join(self.folder, ".stack-guard"))
         code, out = self.run_main("check", self.folder)
         self.assertEqual(code, 1)
         self.assertIn("symbolic link", out)
@@ -442,7 +592,7 @@ class SymlinkTests(Base):
 
     def test_symlinked_reports_folder_is_refused(self):
         os.makedirs(os.path.join(self.folder, ".stack-guard"))
-        os.symlink(self.outside, os.path.join(self.folder, ".stack-guard", "reports"))
+        symlink(self.outside, os.path.join(self.folder, ".stack-guard", "reports"))
         code, out = self.run_main("check", self.folder)
         self.assertEqual(code, 1)
         self.assertEqual(os.listdir(self.outside), [])
@@ -618,6 +768,7 @@ class Round3Fixes(Base):
         with open(path, "rb") as fh:
             return sg.plistlib.loads(fh.read()), out
 
+    @POSIX_ONLY
     def test_schedule_runs_the_stable_copy(self):
         stable = os.path.join(self.home, ".config", "stack-guard", "bin", "stack_guard.py")
         pl, out = self.plist()
@@ -646,7 +797,7 @@ class Round3Fixes(Base):
         os.makedirs(os.path.dirname(real))
         open(real, "w").close()
         link = os.path.join(self.folder, "link-python")
-        os.symlink(real, link)
+        symlink(real, link)
         with mock.patch.object(sys, "executable", link):
             plan = sg.watch_plan("linux", self.folder, "07:30")
         self.assertIn(os.path.realpath(real), plan["line"])
@@ -1199,7 +1350,7 @@ class ReleaseGateFixes(Base):
         for line in ("--find-links https://x/simple", "-f ./wheels", "--no-index"):
             self.assertTrue(sg.INDEX_FLAG.match(line), line)
         for env in ("PIP_FIND_LINKS=x", "UV_FIND_LINKS=x", "PIP_NO_INDEX=1"):
-            self.assertTrue(sg.INDEX_ENV.search(env), env)
+            self.assertTrue(sg.private_python_index_settings([tuple(env.split("=", 1))]), env)
 
 
 class PrefixFolders(Base):
