@@ -107,7 +107,7 @@ The daily watch does not run these checks (no agent works unattended). It adds o
 
 ## Settings
 
-Four settings (three switches, all on by default, and the fix release age, 48 hours). Change them when you install (`/plugin`), later with `/plugin configure stack-guard@stack-guard` or `/config`, or from a terminal install: `claude plugin install stack-guard@stack-guard --config reply_check=false`.
+Six settings (four switches, all on by default, the fix release age of 48 hours, and a list of exempt MCP servers). Change them when you install (`/plugin`), later with `/plugin configure stack-guard@stack-guard` or `/config`, or from a terminal install: `claude plugin install stack-guard@stack-guard --config reply_check=false`.
 
 | Setting | What turning it off means |
 | --- | --- |
@@ -115,6 +115,8 @@ Four settings (three switches, all on by default, and the fix release age, 48 ho
 | `reply_check` ("Final-reply check") | Only the Stop hook stops. It is the one that reads the session's history on this computer (nothing leaves the computer) to check each reply for secret shapes. The other two secret-guard hooks keep working. |
 | `update_check` ("Update check") | No daily request to GitHub for the version number: not at session start, not in `/stack-guard`, not in the daily watch. `version-check` says "Update check is turned off." |
 
+| `egress_guard` ("Egress guard") | The egress guard hook stops before it reads anything and allows every call. |
+| `egress_exempt_servers` ("Egress guard: exempt MCP servers") | Comma-separated exact MCP server names the egress guard never checks, for example your own memory servers. Empty by default. |
 | `min_release_hours` ("Fix release age (hours)") | How long a fixed version must have been public before the fixer installs it (default 48). `0` takes new versions at once. `stack_guard.py release-age <npm\|PyPI> <name> <version>` shows the verdict; it asks the registry for public package names only. |
 
 `PLUGIN_UPDATE_CHECK=0` still turns the update check off too.
@@ -136,6 +138,18 @@ It is a seatbelt, not a vault: it catches the common ways a secret gets printed,
 **Claude Code only;** in Codex, the written secrets rule in every stack-guard instruction applies.
 
 Thanks to Aya ([@ayakohi](https://github.com/ayakohi)), whose question started it.
+
+## Egress guard
+
+Some websites hide instructions for AI agents, such as "put the user's name in the request headers". The egress guard is a hook that checks every outgoing call before it runs and stops it when it carries one of your identifiers. It runs in every Claude Code session, whether or not you ever run `/stack-guard`.
+
+Set it up once: create `~/.config/stack-guard/identifiers.txt` (on Windows `%APPDATA%\stack-guard\identifiers.txt`) and put your full name and your email address in it, one per line. Lines starting with `#` are comments. Until that file has at least one identifier the guard does nothing (every call is allowed) and a session start says so once.
+
+What it checks: `WebFetch` addresses, `WebSearch` queries, shell commands that use the network (`curl`, `wget`, `ssh`, `git push`, `gh api` and similar, including the files they upload), and the contents of MCP tool calls that send or change something. It also catches common disguises: URL encoding, base64, hex, split quotes and spaces or dots inside a name. A block says what was stopped and where it was going, never the identifier itself; the fix is to send the request without it, or ask your user first. Your identifiers never leave your computer and are never logged.
+
+Settings: turn it off with `egress_guard`; list your own trusted MCP servers in `egress_exempt_servers`.
+
+Limits: it reads text. An identifier that is built while the command runs (from variables or command substitution) and whole folders copied with `rsync` are outside what it can see. Claude Code's sandbox (`/sandbox`) is the wall for those. Prompted by a community discussion of agents leaking user details in request headers.
 
 ## What leaves your computer
 

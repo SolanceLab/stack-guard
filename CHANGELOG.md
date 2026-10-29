@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.6.0
+
+- New: the egress guard. It runs in every session, not only during a stack-guard run, and stops any outgoing request (web fetches, searches, network commands, MCP sends) that carries your name or email, including encoded forms: the defence against websites that ask your agent to identify you. Add your identifiers to `~/.config/stack-guard/identifiers.txt` (on Windows `%APPDATA%\stack-guard\identifiers.txt`); turn it off with the `egress_guard` setting. With no identifiers listed it does nothing, and says so once at session start.
+- New setting `egress_exempt_servers`: comma-separated MCP server names the egress guard never checks (none by default).
+- Prompted by a community discussion of agents leaking user details in request headers.
+
 ## 1.5.7
 
 - The release-age check looks up a Python package only when it is one of the scanned project's own packages from a public index; with no project folder it answers "not proven" and nothing leaves the computer.

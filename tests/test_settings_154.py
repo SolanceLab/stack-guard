@@ -49,10 +49,10 @@ class OptionValues(Base):
     def test_plugin_json_user_config_shape(self):
         with open(os.path.join(PLUGIN, ".claude-plugin", "plugin.json"), encoding="utf-8") as fh:
             uc = json.load(fh)["userConfig"]
-        self.assertEqual(sorted(uc), ["min_release_hours", "reply_check", "secret_guard", "update_check"])
+        self.assertEqual(sorted(uc), ["egress_exempt_servers", "egress_guard", "min_release_hours", "reply_check", "secret_guard", "update_check"])
         self.assertEqual((uc["min_release_hours"]["type"], uc["min_release_hours"]["default"]), ("number", 48))
         for key, opt in uc.items():
-            if key == "min_release_hours":
+            if key in ("min_release_hours", "egress_exempt_servers"):
                 continue
             self.assertEqual(opt["type"], "boolean", key)
             self.assertIs(opt["default"], True, key)

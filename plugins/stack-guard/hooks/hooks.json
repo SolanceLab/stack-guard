@@ -1,7 +1,17 @@
 {
-  "description": "stack-guard hooks: the secret guard keeps secret files and keys out of the chat; the update check says when a newer stack-guard is out.",
+  "description": "stack-guard hooks: the secret guard keeps secret files and keys out of the chat; the update check says when a newer stack-guard is out; the egress guard stops outgoing requests that carry your name or email.",
   "hooks": {
     "PreToolUse": [
+      {
+        "matcher": "Bash|WebFetch|WebSearch|mcp__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "PY=python3; [ \"$OS\" = Windows_NT ] && PY=python; \"$PY\" \"${CLAUDE_PLUGIN_ROOT}/hooks/egress_guard.py\"",
+            "timeout": 10
+          }
+        ]
+      },
       {
         "matcher": "Read|Grep|Bash",
         "hooks": [
@@ -37,6 +47,16 @@
       }
     ],
     "SessionStart": [
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "PY=python3; [ \"$OS\" = Windows_NT ] && PY=python; command -v \"$PY\" >/dev/null 2>&1 && \"$PY\" \"${CLAUDE_PLUGIN_ROOT}/hooks/egress_guard.py\" --session-start || true",
+            "timeout": 10
+          }
+        ]
+      },
       {
         "matcher": "startup",
         "hooks": [

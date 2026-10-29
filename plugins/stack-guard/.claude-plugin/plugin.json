@@ -1,6 +1,6 @@
 {
   "name": "stack-guard",
-  "version": "1.5.7",
+  "version": "1.6.0",
   "description": "One-prompt security check and safe fix for everything you build and run with Claude Code.",
   "author": {
     "name": "SolanceLab"
@@ -38,11 +38,25 @@
       "default": true,
       "required": false
     },
+    "egress_guard": {
+      "type": "boolean",
+      "title": "Egress guard",
+      "description": "Stops any outgoing request (web fetches, searches, network commands, MCP sends) that carries a name or email from your identifiers list, in every session. Does nothing until you add identifiers.",
+      "default": true,
+      "required": false
+    },
     "min_release_hours": {
       "type": "number",
       "title": "Fix release age (hours)",
       "description": "A fix waits until the fixed version has been public this many hours, because hijacked releases are usually caught and pulled within a day or two.",
       "default": 48,
+      "required": false
+    },
+    "egress_exempt_servers": {
+      "type": "string",
+      "title": "Egress guard: exempt MCP servers",
+      "description": "Comma-separated exact MCP server names the egress guard never checks, for example your own memory servers. Empty by default.",
+      "default": "",
       "required": false
     }
   }
