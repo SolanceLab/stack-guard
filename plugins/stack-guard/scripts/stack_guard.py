@@ -64,9 +64,10 @@ EOL_PRODUCTS = {"node": "nodejs", "python": "python"}
 AGENT_TIMEOUT = 300
 DEFAULT_TIME = "09:00"
 LABEL = "dev.stack-guard.watch"
+DEEPER_HOW = "to scan it, run stack-guard on that folder directly, or add --depth N to check or inventory"
 SECRET_WORD = re.compile(r"token|key|secret|password|auth", re.I)
 OSV_BATCH = "https://api.osv.dev/v1/querybatch"
-VERSION = "1.6.0"
+VERSION = "1.6.1"
 HIGH_SEVS = ("MALICIOUS", "CRITICAL", "HIGH")
 EOL_URL = "https://endoflife.date/api/%s.json"
 SKIP_DIRS = {"node_modules", "venv", "dist", "build", "worktrees", "__pycache__"}  # dot-folders are skipped too
@@ -284,7 +285,7 @@ def update_line(short=False):
     return ("stack-guard %s is out (you have %s). Claude Code: `claude plugin update stack-guard@stack-guard` then restart, "
             "or turn on auto-update in /plugin > Marketplaces. Codex: `codex plugin marketplace upgrade stack-guard` then "
             "`codex plugin add stack-guard@stack-guard`. Using the daily watch? Run /stack-guard:watch again afterwards "
-            "so it picks up the new script." % (new, VERSION))
+            "so it picks up the new script. The daily watch picks up the new version on its next run." % (new, VERSION))
 
 
 def cmd_version_check():
@@ -1441,7 +1442,7 @@ def render_inventory(inv):
             L.append("- node `%s` wanted by `%s` (package.json engines)" % (p["engines_node"], p["path"]))
     skipped = ["`%s`: %s" % (p["path"], n) for p in inv["projects"] for n in p["not_parsed"]]
     skipped += ["`%s`: could not be read" % u for u in inv["unreadable"]]
-    skipped += ["folder deeper than %d levels: `%s`" % (MAX_DEPTH, d) for d in inv.get("too_deep", [])]
+    skipped += ["folder deeper than %d levels: `%s` (%s)" % (MAX_DEPTH, d, DEEPER_HOW) for d in inv.get("too_deep", [])]
     skipped += [OUTSIDE_NOTE % o for o in inv.get("outside", [])]
     if skipped:
         L += ["", "## Not parsed or unreadable", ""] + ["- " + s for s in skipped]
@@ -1703,7 +1704,7 @@ def make_report(inv, findings, errors, osv_ok, skipped=None):
         c = counts.setdefault(f["project"], {k: 0 for k in SEV_ORDER})
         c[f["severity"]] += 1
     unreadable = ["%s could not be read" % u for u in inv["unreadable"]]
-    unreadable += ["folder deeper than %d levels: %s" % (MAX_DEPTH, d) for d in inv.get("too_deep", [])]
+    unreadable += ["folder deeper than %d levels: %s (%s)" % (MAX_DEPTH, d, DEEPER_HOW) for d in inv.get("too_deep", [])]
     unreadable += [OUTSIDE_NOTE % o for o in inv.get("outside", [])]
     not_parsed = ["%s: %s" % (p["path"], n) for p in inv["projects"] for n in p["not_parsed"]]
     return {"date": today(), "folder": inv["folder"], "osv_ok": osv_ok, "findings": findings or [],
@@ -2124,6 +2125,8 @@ def cmd_inventory(folder):
 
 
 def cmd_check(folder, notify, agents=False):
+    if notify:
+        refresh_script_copy()
     print("Stack Guard %s run %s, folder %s" % (VERSION, datetime.datetime.now().strftime("%Y-%m-%d %H:%M"), os.path.abspath(folder)))
     inv = build_inventory(folder)
     write_inventory(folder, inv, state_only=True)
@@ -2289,16 +2292,77 @@ def stable_script_path():
     return config_dir("bin", "stack_guard.py")
 
 
-def install_script_copy():
-    """Copy this script to the stable path, atomically (temp file, then replace). Returns the path."""
+SOURCE_NOTE = "plugin-source.txt"
+VERSION_LINE = re.compile(r'^VERSION = "([^"\n]+)"', re.M)
+
+
+def script_version(path):
+    """The VERSION a script file declares, or None."""
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            m = VERSION_LINE.search(fh.read(200000))
+    except (OSError, UnicodeDecodeError):
+        return None
+    return m.group(1) if m else None
+
+
+def newest_plugin_script():
+    """The newest installed stack_guard.py: under CLAUDE_PLUGIN_ROOT when set, else beside the plugin cache path
+    recorded at watch-install (the plugin folder holds one sub-folder per version). None when none is found."""
+    found = []
+    root = os.environ.get("CLAUDE_PLUGIN_ROOT")
+    if root:
+        found.append(os.path.join(root, "scripts", "stack_guard.py"))
+    try:
+        with open(config_dir("bin", SOURCE_NOTE), "r", encoding="utf-8") as fh:
+            recorded = fh.read().strip()
+    except OSError:
+        recorded = ""
+    if recorded:
+        found.append(recorded)
+        plugin_dir = os.path.dirname(os.path.dirname(os.path.dirname(recorded)))  # <plugin>/<version>/scripts/stack_guard.py
+        found += glob.glob(os.path.join(glob.escape(plugin_dir), "*", "scripts", "stack_guard.py"))
+    best, best_key = None, None
+    for path in found:
+        v = script_version(path) if os.path.isfile(path) and not is_link(path) else None
+        if v and (best_key is None or release_key(v) > best_key):
+            best, best_key = path, release_key(v)
+    return best
+
+
+def refresh_script_copy():
+    """Scheduled run: when the installed plugin holds a newer stack_guard.py than this copy, copy it over and say so.
+    Never stops the run; the next run starts on the new copy."""
+    me = os.path.abspath(__file__)
+    if os.path.normcase(me) != os.path.normcase(os.path.abspath(stable_script_path())):
+        return False  # only the scheduled copy refreshes itself
+    try:
+        newest = newest_plugin_script()
+        v = script_version(newest) if newest else None
+        if not v or release_key(v) <= release_key(VERSION):
+            return False
+        install_script_copy(newest)
+        print("stack-guard: refreshed the script copy from %s to %s; the next run uses it." % (VERSION, v))
+        return True
+    except OSError as e:
+        print("stack-guard: could not refresh the script copy (%s)." % e)
+        return False
+
+
+def install_script_copy(source=None):
+    """Copy a script (default: this one) to the stable path, atomically (temp file, then replace). Returns the path.
+    A copy made from the plugin also records where it came from, so the scheduled run can find newer versions."""
     dest = stable_script_path()
     d = os.path.dirname(dest)
     os.makedirs(d, exist_ok=True)
     posix = os.name == "posix"
     if posix:
         os.chmod(d, 0o700)
-    with open(os.path.abspath(__file__), "rb") as fh:
+    src = os.path.abspath(source or __file__)
+    with open(src, "rb") as fh:
         data = fh.read()
+    if os.path.normcase(src) != os.path.normcase(os.path.abspath(dest)):
+        write_file(os.path.join(d, SOURCE_NOTE), src)
     tmp = "%s.%d.tmp" % (dest, os.getpid())
     try:
         fd = os.open(tmp, os.O_CREAT | os.O_WRONLY | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0), 0o600)
@@ -2337,10 +2401,29 @@ def cmd_quote(arg):
     return '"%s"' % arg
 
 
+FALLBACK_PYTHONS = ("/opt/homebrew/bin/python3", "/usr/local/bin/python3", "/usr/bin/python3")
+VERSIONED_PYTHON = re.compile(r"/Cellar/|/Python\.framework/Versions/\d|/python@\d")
+# Checked by the scheduler before it starts: the interpreter and the script copy must both exist.
+WATCH_GUARD_SH = ('[ -x "$1" ] || { echo "stack-guard watch: the Python at $1 is missing; run /stack-guard:watch again"; exit 127; }; '
+                  '[ -f "$2" ] || { echo "stack-guard watch: the script copy $2 is missing; run /stack-guard:watch again"; exit 127; }; '
+                  'exec "$@"')
+
+
+def stable_python():
+    """The interpreter to schedule. Windows keeps the running one. Elsewhere: the running one when its path does not
+    name a package-manager version (Homebrew Cellar, a versioned framework), else the first system python3 found."""
+    py = sys.executable or "python3"
+    if platform_name() == "windows" or not sys.executable:
+        return os.path.realpath(py) if sys.executable else py
+    if not VERSIONED_PYTHON.search(py):
+        real = os.path.realpath(py)  # schedule the validated target, never a replaceable link
+        return py if VERSIONED_PYTHON.search(real) else real  # a stable link stays a link: it follows upgrades
+    return next((c for c in FALLBACK_PYTHONS if os.path.exists(c)), os.path.realpath(py))
+
+
 def watch_plan(plat, folder, hhmm, agents=True, installing=True):
     hour, minute = parse_time(hhmm)
     root = os.path.abspath(folder)
-    py = sys.executable or "python3"
     if installing and sys.executable and is_inside(sys.executable, root):
         raise ValueError("Refusing to schedule: the Python running this (%s) lives inside the folder being checked, "
                          "so the folder could replace it. Run again with a Python installed outside the folder." % sys.executable)
@@ -2349,8 +2432,9 @@ def watch_plan(plat, folder, hhmm, agents=True, installing=True):
                          "so the folder could replace it. Set STACK_GUARD_HOME to a folder outside it." % stable_script_path())
     if installing and is_inside(os.path.dirname(watch_log_path(root)), root):
         raise ValueError("Refusing to schedule: the run log would live inside the folder being checked.")
-    if sys.executable:
-        py = os.path.realpath(sys.executable)  # schedule the validated target, never a replaceable link
+    py = stable_python()
+    if installing and is_inside(py, root):
+        raise ValueError("Refusing to schedule: the Python to schedule (%s) lives inside the folder being checked." % py)
     argv = [py, stable_script_path(), "check", "--notify"]
     if agents and find_agent_cli(root):
         argv.append("--agents")
@@ -2363,7 +2447,7 @@ def watch_plan(plat, folder, hhmm, agents=True, installing=True):
     if plat == "darwin":
         path = os.path.join(home_dir(), "Library", "LaunchAgents", label + ".plist")
         content = plistlib.dumps({
-            "Label": label, "ProgramArguments": argv,
+            "Label": label, "ProgramArguments": ["/bin/sh", "-c", WATCH_GUARD_SH, "sh"] + argv,
             "StartCalendarInterval": {"Hour": hour, "Minute": minute},
             "StandardOutPath": log, "StandardErrorPath": log,
             "EnvironmentVariables": {"PATH": schedule_path(root)}})
@@ -2373,7 +2457,9 @@ def watch_plan(plat, folder, hhmm, agents=True, installing=True):
     if plat == "windows":
         # The scheduled task runs a small .cmd file, so the long command never has to survive nested quoting.
         cmd_file = config_dir("bin", "watch-%s.cmd" % h)
-        cmd_text = "@echo off\n%s >> %s 2>&1\n" % (" ".join(cmd_quote(a) for a in argv), cmd_quote(log))
+        missing = "".join('if not exist %s (echo stack-guard watch: %s is missing; run /stack-guard:watch again >> %s 2>&1 & exit /b 1)\n'
+                          % (cmd_quote(f), "the Python" if f == argv[0] else "the script copy", cmd_quote(log)) for f in argv[:2])
+        cmd_text = "@echo off\n%s%s >> %s 2>&1\n" % (missing, " ".join(cmd_quote(a) for a in argv), cmd_quote(log))
         task = TASK_PREFIX + h
         create = ["schtasks", "/Create", "/SC", "DAILY", "/TN", task, "/TR", cmd_quote(cmd_file),
                   "/ST", "%02d:%02d" % (hour, minute), "/F"]
@@ -2381,7 +2467,7 @@ def watch_plan(plat, folder, hhmm, agents=True, installing=True):
                     show="%s\n%s contains:\n%s" % (subprocess.list2cmdline(create), cmd_file, cmd_text),
                     remove=[["schtasks", "/Delete", "/TN", task, "/F"]])
     line = "%d %d * * * PATH=%s %s >> %s 2>&1 %s%s" % (minute, hour, shlex.quote(schedule_path(root)),
-                                                      " ".join(shlex.quote(a) for a in argv), shlex.quote(log), CRON_MARK, h)
+                                                      " ".join(shlex.quote(a) for a in ["/bin/sh", "-c", WATCH_GUARD_SH, "sh"] + argv), shlex.quote(log), CRON_MARK, h)
     return dict(base, kind="cron", line=line, marker=CRON_MARK + h, show="crontab line:\n" + line, install=[], remove=[])
 
 
@@ -2575,9 +2661,12 @@ def cmd_watch_remove(folder=".", all_entries=False):
 
 
 def main(argv=None):
+    global MAX_DEPTH
     ap = argparse.ArgumentParser(prog="stack_guard.py", description="Inventory and check what your projects run on.")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("inventory").add_argument("folder", nargs="?", default=".")
+    iv = sub.add_parser("inventory")
+    iv.add_argument("folder", nargs="?", default=".")
+    iv.add_argument("--depth", type=int, default=None, help="how many folder levels to look into (default %d)" % MAX_DEPTH)
     sub.add_parser("version-check")
     ra = sub.add_parser("release-age", help="is this version old enough to install? (0 yes, 3 too new, 2 not proven)")
     ra.add_argument("ecosystem")
@@ -2588,6 +2677,7 @@ def main(argv=None):
     c = sub.add_parser("check")
     c.add_argument("folder", nargs="?", default=".")
     c.add_argument("--notify", action="store_true")
+    c.add_argument("--depth", type=int, default=None, help="how many folder levels to look into (default %d)" % MAX_DEPTH)
     c.add_argument("--agents", action="store_true", help="also run the news scout and the explainer")
     c.add_argument("--no-agents", action="store_true", help="turn the agents off (wins over --agents)")
     for name in ("webhook-set", "webhook-remove"):
@@ -2604,6 +2694,11 @@ def main(argv=None):
     if a.cmd in ("inventory", "check", "watch-install", "webhook-set", "webhook-remove") and not os.path.isdir(a.folder):
         print("Folder not found: %s" % a.folder)
         return 1
+    if getattr(a, "depth", None) is not None:
+        if a.depth < 1:
+            print("--depth must be 1 or more")
+            return 1
+        MAX_DEPTH = a.depth
     try:
         if a.cmd == "version-check":
             return cmd_version_check()

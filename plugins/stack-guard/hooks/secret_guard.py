@@ -6,6 +6,7 @@ import fnmatch
 import json
 import os
 import re
+import secrets
 import shlex
 import stat
 import sys
@@ -173,11 +174,56 @@ def hoist_substitutions(cmd, bodies):
     return cmd
 
 
-def segments_sep(cmd):
-    """Yield (tokens, separator that follows) for each simple command."""
+
+
+def unquoted_mask(cmd):
+    """One flag per character: True where the character sits outside single quotes, double quotes and backslash escapes."""
+    mask, quote, esc = [], None, False
+    for ch in cmd:
+        mask.append(quote is None and not esc)
+        if esc:
+            esc = False
+        elif ch == "\\" and quote != "'":
+            esc = True
+        elif quote:
+            if ch == quote:
+                quote = None
+        elif ch in "'\"":
+            quote = ch
+    return mask
+
+
+def protect_extglobs(cmd, groups, nonce):
+    """Swap each unquoted extglob group for a placeholder (innermost first) so the lexer keeps one word. The text is untouched otherwise."""
     prev = None
-    while prev != cmd:  # shortcut: extglob groups become a plain wildcard (also inside quotes) so the lexer keeps one word
-        prev, cmd = cmd, EXTGLOB_GROUP.sub("*", cmd)
+    while prev != cmd:
+        prev, mask = cmd, unquoted_mask(cmd)
+        def take(m):
+            if not mask[m.start()]:
+                return m.group(0)
+            groups.append(m.group(0))
+            return "__XG%s_%d__" % (nonce, len(groups) - 1)
+        cmd = EXTGLOB_GROUP.sub(take, cmd)
+    return cmd
+
+
+def restore_extglobs(tok, groups, normalise, nonce):
+    """Put the groups back as written, or (normalise) as a plain wildcard. Only markers made in this parse (random nonce) count."""
+    mark = re.compile(r"__XG%s_(\d+)__" % nonce)
+    def back(m):
+        i = int(m.group(1))
+        if i >= len(groups):
+            return m.group(0)
+        return "*" if normalise else restore_extglobs(groups[i], groups, False, nonce)
+    return mark.sub(back, tok)
+
+
+def segments_sep(cmd, normalise=False):
+    """Yield (tokens, separator that follows) for each simple command. The words keep their written form; with
+    normalise, each unquoted extglob group in them reads as a plain wildcard."""
+    groups = []
+    nonce = secrets.token_hex(6)
+    cmd = protect_extglobs(cmd, groups, nonce)
     try:
         lex = shlex.shlex(cmd, posix=True, punctuation_chars=True)
         lex.whitespace_split = True
@@ -190,7 +236,7 @@ def segments_sep(cmd):
             yield seg, t
             seg = []
         else:
-            seg.append(t)
+            seg.append(restore_extglobs(t, groups, normalise, nonce))
     yield seg, ""
 
 
@@ -233,11 +279,12 @@ def recursive_unfiltered(head, seg):
     has_pat = bool({"-e", "-f", "--regexp", "--file"} & set(flags)) or any(
         t.startswith(("--regexp=", "--file=")) for t in flags)
     rest, skip = [], False
-    for t in (args[1:] if head == "git" else args):
+    end = args.index("--") if "--" in args else len(args)
+    for n, t in enumerate(args[1:] if head == "git" else args):
         if skip:
             skip = False  # the pattern (or pattern file) after -e/-f is not a search path
             continue
-        if t in ("-e", "-f", "--regexp", "--file", "--exclude", "--exclude-dir"):
+        if t in ("-e", "-f", "--regexp", "--file") or (t in EXCLUDE_OPTS and n < end):
             skip = True  # the argument of these flags is a pattern, not a search path
             continue
         rest.append(t)
@@ -294,10 +341,23 @@ WRITE_REDIRECTS = {">", ">>", ">|", "&>", "&>>"}
 MENTION_SPLIT = re.compile(r"[^\s'\"(),=:;@<>]+")
 
 
+SEARCHERS = {"grep", "rg", "ag"}
+EXCLUDE_OPTS = ("--exclude", "--exclude-dir")
+
+
+def is_exclusion(head, seg, i):
+    """True when seg[i] is a real exclude / glob-negation option of grep, rg or ag, or its value, ahead of any `--`.
+    Such a token names what to skip, not what to read. Any other token is checked as usual."""
+    if head not in SEARCHERS or i >= (seg.index("--") if "--" in seg else len(seg)):
+        return False
+    t, before = seg[i], seg[i - 1] if i else ""
+    if t.startswith(("--exclude=", "--exclude-dir=", "--glob=!")) or (t.startswith("-g!") and len(t) > 3):
+        return True
+    return before in EXCLUDE_OPTS or (before in ("-g", "--glob") and t.startswith("!"))
+
+
 def secret_mention(tok):
     """The protected path a token names (as a whole or inside quoted code), or None."""
-    if tok.startswith(("--exclude", "--glob=!", "!")):
-        return None  # an exclusion pattern names what to skip, not what to read
     for c in [tok] + MENTION_SPLIT.findall(tok):
         if "/" not in c and c == "credentials":
             continue  # shortcut: the bare word 'credentials' is too common in prose to count as a file
@@ -370,8 +430,8 @@ def stderr_leak(body, bodies):
     if not (OUTPUT_ALIAS.search(text) or STDERR_REDIRECT.search(text)):
         return None
     for seg, _ in segments_sep(text):
-        for t in seg:
-            hit = secret_mention(t)
+        for i, t in enumerate(seg):
+            hit = None if is_exclusion(os.path.basename(seg[0]), seg, i) else secret_mention(t)
             if hit:
                 return hit
     return None
@@ -525,9 +585,14 @@ def process_listing_violation(head, seg):
 
 
 def bash_violation(cmd, bodies=None, depth=0):
+    """Check the words as written, then again with extglob groups read as wildcards; a hit on either blocks."""
     bodies = [] if bodies is None else bodies
+    return bash_violation_pass(cmd, bodies, depth, False) or bash_violation_pass(cmd, bodies, depth, True)
+
+
+def bash_violation_pass(cmd, bodies, depth, normalise):
     cmd = hoist_substitutions(cmd, bodies)
-    parts = list(segments_sep(cmd))
+    parts = list(segments_sep(cmd, normalise))
     shadowed = shadowed_consumers(cmd)
     for n, (seg, sep) in enumerate(parts):
         words = [os.path.basename(t) for t in seg]
@@ -541,7 +606,7 @@ def bash_violation(cmd, bodies=None, depth=0):
         if inner:
             if depth >= MAX_SHELL_DEPTH:
                 return "a shell nested more than %d deep" % MAX_SHELL_DEPTH
-            hit = bash_violation(inner, bodies, depth + 1)
+            hit = bash_violation_pass(inner, bodies, depth + 1, normalise)
             if hit:
                 return hit
         holes = [int(n) for n in HOLE.findall(" ".join(seg))]
@@ -553,7 +618,7 @@ def bash_violation(cmd, bodies=None, depth=0):
         # Its stdout reaches the chat only when the outer command prints; the printer decides.
         if holes and (head in PRINTERS or HOLE.search(seg[0])):
             for k in holes:
-                hit = bash_violation(bodies[k], bodies)
+                hit = bash_violation_pass(bodies[k], bodies, depth, normalise)
                 if hit:
                     return hit
         listing = process_listing_violation(head, seg)
@@ -591,8 +656,8 @@ def bash_violation(cmd, bodies=None, depth=0):
         piped = (sep == "|" and n + 1 < len(parts) and main in PIPE_PRODUCERS
                  and is_consumer(parts[n + 1][0], final=parts[n + 1][1] != "|", shadowed=shadowed))
         for i, t in enumerate(seg):
-            if i and seg[i - 1] in ("--exclude", "--exclude-dir"):
-                continue  # the pattern after an exclude flag names what to skip
+            if is_exclusion(main, seg, i):
+                continue  # the pattern of an exclude option names what to skip
             hit = secret_mention(t)
             if hit and not mention_ok(main, seg, i, piped):
                 return hit

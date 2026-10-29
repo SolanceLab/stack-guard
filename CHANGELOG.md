@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.6.1
+
+- Secret guard: fixed three ways a command could get past it (found by automatic review). Details are in [SECURITY.md](SECURITY.md).
+- Daily watch: the schedule names a Python that survives package-manager upgrades, and each run logs a clear line and stops when that Python or the script copy is missing.
+- Daily watch: the script copy refreshes itself when the installed plugin has a newer version.
+- A folder deeper than the depth limit is now listed under "Not checked" with how to scan it; `check` and `inventory` accept `--depth N` (default unchanged).
+- Egress guard: the home-folder name is no longer counted inside Claude Code's own folder names (`-Users-<name>-…`) when they appear in a local part of a shell command, so reading your own session files is not a false alarm. In anything outgoing (web addresses, sent data, MCP messages, uploaded files) it still counts, and names and emails always count.
+- New: [SECURITY.md](SECURITY.md) lists every security fix by version and says how to report one privately.
+
 ## 1.6.0
 
 - New: the egress guard. It runs in every session, not only during a stack-guard run, and stops any outgoing request (web fetches, searches, network commands, MCP sends) that carries your name or email, including encoded forms: the defence against websites that ask your agent to identify you. Add your identifiers to `~/.config/stack-guard/identifiers.txt` (on Windows `%APPDATA%\stack-guard\identifiers.txt`); turn it off with the `egress_guard` setting. With no identifiers listed it does nothing, and says so once at session start.
@@ -23,7 +32,7 @@
 - Files and folders that point outside the scanned folder are not read.
 - Secret guard: a secret may be piped only into a trusted command named bare, in its exact form, as the last step. A content search narrowed by a file pattern or type is checked against the real files under the search folder.
 - More private-index settings count: a project `uv.toml` or `poetry.toml`, and the Windows, virtualenv and Poetry config locations. An empty `PIP_NO_INDEX` counts as set.
-- The committed-secrets check skips vendored folders (`.venv`, `venv`, `site-packages`, `node_modules`) and `cacert.pem`.
+- The committed-secrets check skips the public certificate bundle `cacert.pem` (vendored folders such as `.venv` and `node_modules` are still checked).
 - Windows: folder junctions are treated like links, and tests skip with a stated reason where a symlink or POSIX feature is missing.
 - The secret guard no longer treats code that reads a key from the environment as a leaked key, and process listings show names only while stack-guard is running.
 - Marta S. — reporter

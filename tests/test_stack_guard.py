@@ -772,7 +772,8 @@ class Round3Fixes(Base):
     def test_schedule_runs_the_stable_copy(self):
         stable = os.path.join(self.home, ".config", "stack-guard", "bin", "stack_guard.py")
         pl, out = self.plist()
-        self.assertEqual(pl["ProgramArguments"][1], stable)
+        self.assertIn(stable, pl["ProgramArguments"])
+        self.assertEqual(pl["ProgramArguments"][:2], ["/bin/sh", "-c"])  # a check for a missing Python or script copy runs first
         self.assertTrue(os.path.isfile(stable))
         self.assertEqual(stat.S_IMODE(os.stat(stable).st_mode), 0o600)
         self.assertEqual(stat.S_IMODE(os.stat(os.path.dirname(stable)).st_mode), 0o700)
@@ -1175,8 +1176,9 @@ class Round5Fixes(Base):
             self.assertIn('\\"%s\\"' % plan["cmd_file"], sg.subprocess.list2cmdline(create))  # one quoted argument for schtasks
             lines = plan["cmd_text"].splitlines()
             self.assertEqual(lines[0], "@echo off")
-            self.assertTrue(lines[1].endswith('>> "%s" 2>&1' % plan["log"]))
-            self.assertIn('"%s"' % sg.stable_script_path(), lines[1])
+            self.assertTrue(lines[-1].endswith('>> "%s" 2>&1' % plan["log"]))
+            self.assertIn('"%s"' % sg.stable_script_path(), lines[-1])
+            self.assertTrue(lines[1].startswith("if not exist"))
             self.assertIn("watch-%s.cmd" % sg.folder_hash(self.folder), plan["cmd_file"])
             self.assertEqual(create[create.index("/TN") + 1], "stack-guard watch " + sg.folder_hash(self.folder))
             with mock.patch.object(sg, "run_cmd", lambda a, **k: (0, "")):
@@ -1203,7 +1205,8 @@ class Round5Fixes(Base):
         self.assertIn(deep, [p["path"] for p in inv["projects"]])
         self.assertEqual(inv["too_deep"], [deep + "/x"])
         rep = sg.make_report(inv, [], [], True)
-        self.assertIn("folder deeper than 6 levels: %s/x" % deep, rep["not_checked"])
+        self.assertTrue(any(n.startswith("folder deeper than 6 levels: %s/x" % deep) and "--depth N" in n and "that folder directly" in n
+                            for n in rep["not_checked"]), rep["not_checked"])
 
     # round 5b: Codex P1/P2 findings
     def test_unscoped_mcp_needs_lockfile_proof_and_unpinned_too(self):

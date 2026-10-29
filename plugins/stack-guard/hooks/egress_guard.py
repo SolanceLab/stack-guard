@@ -13,7 +13,8 @@ Settings: egress_guard (default on; off = this hook reads nothing and allows), e
 (comma-separated exact MCP server names that are never checked).
 Limit: identifiers assembled at run time from variables or command substitution, and whole folders copied by
 rsync, are outside what a text check can see; the Claude Code sandbox is the wall for those.
-Accepted limit: the bare home-folder name is ignored inside local-path arguments (names and emails never are).
+Accepted limit: in a shell command only, the bare home-folder name is ignored inside Claude Code's encoded folder names
+and in local-only path arguments (names and emails never are; URLs, WebFetch, MCP and file bodies are checked in full).
 Exit 0 = allow, exit 2 = block (stderr = one line, an action).
 """
 import base64
@@ -245,7 +246,7 @@ LOCAL_PATH_RX = re.compile(r"(?:/Users/|/home/|~/|\./|\.\./)")
 FILE_PART_RX = re.compile(r"((?:^|=)[@<])((?:/Users/|/home/|~/|\./|\.\./)[^;]*)")
 
 
-def strip_local_args(cmd):
+def strip_local_args(cmd, home=""):
     """Drop only proven local-only path args (output, config, cwd, executable paths, @file sources).
     A path-shaped value of a data, header, form or URL flag is outgoing data and stays."""
     try:
@@ -265,18 +266,37 @@ def strip_local_args(cmd):
         elif LOCAL_PATH_RX.match(t):
             keep.append(" ")
         else:
-            keep.append(t)
+            # only words that are not data, header, form or URL values; a word carrying an address, or an argument
+            # to a remote shell, is outgoing and keeps the check
+            remote = any(os.path.basename(x) in ("ssh", "scp", "sftp", "rsync") for x in flat[:len(keep)])
+            outgoing = remote or "://" in t or URL_ANY_RX.search(t) or ADDR_RX.search(t) or HOSTLIKE_RX.match(t)
+            keep.append(t if outgoing else mask_home(t, home, ENCODED_HOME))
         prev = t
     return "\n".join(keep)
 
 
+ENCODED_HOME = ("-Users-", "-home-")  # Claude Code's own folder names: -Users-<name>-<project>
+
+
+def mask_home(text, home, prefixes):
+    """Blank the home-folder name where it follows one of the prefixes in a local-path shape: the name must end the
+    path part (a slash, a dash, the end, or any non-name character), so a longer word that merely starts with it stays."""
+    if not home:
+        return text
+    for pre in prefixes:
+        text = re.sub(re.escape(pre) + re.escape(home) + r"(?![A-Za-z0-9_.])", lambda m: pre + " ", text, flags=re.I)
+    return text
+
+
 def find_hit(segs, patterns, home=""):
-    """segs: (text, is_command). A pattern inside the home-folder name ignores proven local-only path args."""
+    """segs: (text, is_command). In a shell command only, the home-folder name is not counted inside Claude Code's
+    encoded folder names, and proven local-only path args are ignored. Everything else (URLs, WebFetch/WebSearch,
+    MCP fields, uploaded or piped file bodies) is checked in full, a real /Users/<name> path included."""
     homes = [p for p in patterns if home and p in home]
     others = [p for p in patterns if p not in homes]
     for text, is_cmd in segs:
         if is_cmd:
-            h = hit_in(text, others) or hit_in(strip_local_args(text), homes)
+            h = hit_in(text, others) or hit_in(strip_local_args(text, home), homes)
         else:
             h = hit_in(text, patterns)
         if h:
