@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.5.7
+
+- The release-age check looks up a Python package only when it is one of the scanned project's own packages from a public index; with no project folder it answers "not proven" and nothing leaves the computer.
+
 ## 1.5.6
 
 - Fixes wait until a fixed version has been public for 48 hours (adjustable), because hijacked releases are usually caught and pulled within that time; the fixer says when to run again.

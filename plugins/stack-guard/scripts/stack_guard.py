@@ -66,7 +66,7 @@ DEFAULT_TIME = "09:00"
 LABEL = "dev.stack-guard.watch"
 SECRET_WORD = re.compile(r"token|key|secret|password|auth", re.I)
 OSV_BATCH = "https://api.osv.dev/v1/querybatch"
-VERSION = "1.5.6"
+VERSION = "1.5.7"
 HIGH_SEVS = ("MALICIOUS", "CRITICAL", "HIGH")
 EOL_URL = "https://endoflife.date/api/%s.json"
 SKIP_DIRS = {"node_modules", "venv", "dist", "build", "worktrees", "__pycache__"}  # dot-folders are skipped too
@@ -2239,9 +2239,13 @@ def may_look_up_name(eco, name, folder=None):
     projects = inv["projects"] if inv else []
     if eco == "npm":
         return npm_name_public(name) and name not in {n for p in projects for n in p["private_npm"]}
-    if global_private_index() or any(p.get("private_index") for p in projects):
+    # PyPI names carry no public/private mark of their own, so fail closed: look one up only for a scanned
+    # project that uses no private index, where the name is one of that project's own packages and not private.
+    if not projects or global_private_index() or any(p.get("private_index") for p in projects):
         return False
-    return norm_py(name) not in {n for p in projects for n in p.get("private_py", [])}
+    known = {norm_py(x["name"]) for p in projects for x in p["packages"] if x["ecosystem"] == "PyPI"}
+    private = {n for p in projects for n in p.get("private_py", [])}
+    return norm_py(name) in known and norm_py(name) not in private
 
 
 def cmd_release_age(eco, name, version, folder, min_hours_flag):

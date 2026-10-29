@@ -138,12 +138,15 @@ class ReleaseAgeCli(Base):
         proj = os.path.join(self.tmp, "priv")
         os.makedirs(proj)
         with open(os.path.join(proj, "requirements.txt"), "w", encoding="utf-8") as fh:
-            fh.write("secretlib @ git+https://git.example/secretlib.git\n")
+            fh.write("secretlib @ git+https://git.example/secretlib.git\nrequests==1.0.0\n")
         code, out, net = self.run_cli("PyPI", "secretlib", "1.0.0", "--folder", proj)
         self.assertEqual((code, out), (2, "unknown: private package, release date not looked up"))
         net.assert_not_called()
         code, out, net = self.run_cli("PyPI", "requests", "1.0.0", "--folder", proj)
         self.assertEqual(code, 0, out)
+        code, out, net = self.run_cli("PyPI", "flask", "1.0.0", "--folder", proj)   # not one of this project's packages
+        self.assertEqual(code, 2, out)
+        net.assert_not_called()
 
     def test_private_index_for_the_computer_keeps_pypi_names_home(self):
         with mock.patch.dict(os.environ, {"PIP_INDEX_URL": "https://corp-mirror.example/simple"}):
@@ -187,3 +190,35 @@ class MaliciousReleases(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PypiLookupFailsClosed(unittest.TestCase):
+    """A PyPI name leaves the computer only for a scanned project that lists it from a public index."""
+
+    def setUp(self):
+        self.real = (sg.build_inventory, sg.global_private_index)
+        sg.global_private_index = lambda: False
+
+    def tearDown(self):
+        sg.build_inventory, sg.global_private_index = self.real
+
+    def inv(self, packages, private_py=(), private_index=False):
+        return {"projects": [{"packages": [{"ecosystem": "PyPI", "name": n, "version": "1.0"} for n in packages],
+                              "private_npm": [], "private_py": list(private_py), "private_index": private_index}]}
+
+    def test_no_folder_is_not_proven(self):
+        self.assertFalse(sg.may_look_up_name("PyPI", "requests", None))
+
+    def test_name_from_the_project_is_looked_up(self):
+        sg.build_inventory = lambda f: self.inv(["requests"])
+        self.assertTrue(sg.may_look_up_name("PyPI", "Requests", "/p"))
+
+    def test_name_not_in_the_project_is_not_looked_up(self):
+        sg.build_inventory = lambda f: self.inv(["requests"])
+        self.assertFalse(sg.may_look_up_name("PyPI", "acme-internal", "/p"))
+
+    def test_private_name_or_private_index_is_not_looked_up(self):
+        sg.build_inventory = lambda f: self.inv(["acme-internal"], private_py=["acme-internal"])
+        self.assertFalse(sg.may_look_up_name("PyPI", "acme-internal", "/p"))
+        sg.build_inventory = lambda f: self.inv(["requests"], private_index=True)
+        self.assertFalse(sg.may_look_up_name("PyPI", "requests", "/p"))
