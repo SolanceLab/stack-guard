@@ -481,7 +481,7 @@ class DeployRuntimeAndVersion(unittest.TestCase):
             self.assertIn("deploy-runtime check: passed / failed / not possible", fh.read())
 
     def test_all_manifests_say_the_script_version(self):
-        self.assertEqual(sg.VERSION, "1.6.1")
+        self.assertEqual(sg.VERSION, "1.6.2")
         for rel in (("plugins", "stack-guard", ".claude-plugin", "plugin.json"), ("plugins", "stack-guard", ".codex-plugin", "plugin.json")):
             with open(os.path.join(ROOT, *rel), encoding="utf-8") as fh:
                 self.assertEqual(json.load(fh)["version"], sg.VERSION)

@@ -67,7 +67,7 @@ LABEL = "dev.stack-guard.watch"
 DEEPER_HOW = "to scan it, run stack-guard on that folder directly, or add --depth N to check or inventory"
 SECRET_WORD = re.compile(r"token|key|secret|password|auth", re.I)
 OSV_BATCH = "https://api.osv.dev/v1/querybatch"
-VERSION = "1.6.1"
+VERSION = "1.6.2"
 HIGH_SEVS = ("MALICIOUS", "CRITICAL", "HIGH")
 EOL_URL = "https://endoflife.date/api/%s.json"
 SKIP_DIRS = {"node_modules", "venv", "dist", "build", "worktrees", "__pycache__"}  # dot-folders are skipped too
@@ -2306,6 +2306,34 @@ def script_version(path):
     return m.group(1) if m else None
 
 
+PLUGIN_ROOTS = (os.path.join(".claude", "plugins"), os.path.join(".codex", "plugins"))
+
+
+def trusted_plugin_script(path):
+    """A refresh source must be a stack_guard.py inside the user's own plugin folders (~/.claude/plugins or
+    ~/.codex/plugins), resolved through links, owned by this user, and with no folder on the way writable by others.
+    A scanned project, a download or any other place can never supply the code the 3 am run executes."""
+    try:
+        real = os.path.realpath(path)
+        home = os.path.realpath(os.path.expanduser("~"))
+        roots = [os.path.join(home, r) for r in PLUGIN_ROOTS]
+        root = next((r for r in roots if real.startswith(r + os.sep)), None)
+        if not root or os.path.basename(real) != "stack_guard.py":
+            return False
+        if not hasattr(os, "getuid"):
+            return True  # Windows: location only (user profiles are private by default); file ACLs are not read — a known limit
+        d = real
+        while True:
+            st = os.stat(d)
+            if st.st_uid not in (os.getuid(), 0) or st.st_mode & 0o022:
+                return False
+            if d == home:
+                return True  # every folder from the file up to and including home is the user's and not writable by others
+            d = os.path.dirname(d)
+    except OSError:
+        return False
+
+
 def newest_plugin_script():
     """The newest installed stack_guard.py: under CLAUDE_PLUGIN_ROOT when set, else beside the plugin cache path
     recorded at watch-install (the plugin folder holds one sub-folder per version). None when none is found."""
@@ -2324,7 +2352,7 @@ def newest_plugin_script():
         found += glob.glob(os.path.join(glob.escape(plugin_dir), "*", "scripts", "stack_guard.py"))
     best, best_key = None, None
     for path in found:
-        v = script_version(path) if os.path.isfile(path) and not is_link(path) else None
+        v = script_version(path) if os.path.isfile(path) and not is_link(path) and trusted_plugin_script(path) else None
         if v and (best_key is None or release_key(v) > best_key):
             best, best_key = path, release_key(v)
     return best

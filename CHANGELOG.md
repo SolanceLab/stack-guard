@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.6.2
+
+- Daily watch: the script copy refreshes itself only from your own plugin folders (owned by you, not writable by others), never from a scanned project or any other place.
+
 ## 1.6.1
 
 - Secret guard: fixed three ways a command could get past it (found by automatic review). Details are in [SECURITY.md](SECURITY.md).

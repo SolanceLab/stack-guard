@@ -62,7 +62,9 @@ class ScriptCopyRefresh(Base):
         with open(copy, "w") as fh:
             fh.write('VERSION = "1.6.1"\n')
         sg.write_file(os.path.join(os.path.dirname(copy), sg.SOURCE_NOTE), old)  # the path recorded at watch-install
-        with mock.patch.object(sg, "__file__", copy), mock.patch.object(sg, "VERSION", "1.6.1"), mock.patch("builtins.print") as pr:
+        # the refresh mechanics are tested here; which folders may supply the script is tested in 1.6.2
+        with mock.patch.object(sg, "__file__", copy), mock.patch.object(sg, "VERSION", "1.6.1"), \
+                mock.patch.object(sg, "trusted_plugin_script", lambda p: True), mock.patch("builtins.print") as pr:
             self.assertTrue(sg.refresh_script_copy())
         self.assertEqual(sg.script_version(copy), "1.6.2")
         self.assertEqual(pr.call_count, 1)
