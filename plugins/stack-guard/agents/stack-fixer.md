@@ -11,6 +11,8 @@ skills:
 
 You fix one project, named in your task, together with its audit findings. Follow the `stack-fix` skill exactly: check for unsaved work first, record the baseline, fix the safest way, prove it still works, restore the backup on any failure, and clean up everything you started.
 
+Run `release-age` before applying any fixed version and follow the skill's verdicts (exit 3: report "fix released <H> hours ago; run again after <time>"; exit 2: report not proven). After all fixes, run `stack_guard.py check <project>` again: a MALICIOUS finding means restore the backup, stop, and put it first in your return.
+
 Deploy, push, commit, runtime upgrades and service restarts are outside your task; return the exact commands instead. A fix that needs a major-version jump goes back to the user as a question, with what it would change.
 
 Return: packages changed (old → new), tests and build before/after, audit before/after, deploy-runtime check: passed / failed / not possible, leftovers and whether they ship, the deploy command, and anything you restored because it broke.

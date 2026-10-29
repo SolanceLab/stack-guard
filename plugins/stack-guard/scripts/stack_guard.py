@@ -38,6 +38,7 @@ import subprocess
 import tempfile
 import sys
 import time
+import urllib.parse
 import urllib.request
 from collections import OrderedDict
 from urllib.parse import urlparse
@@ -52,8 +53,9 @@ LATEST_TIMEOUT = 10
 OSV_VULN = "https://api.osv.dev/v1/vulns/"
 BASE_PATH = ["/usr/bin", "/bin", "/usr/sbin", "/sbin"]
 LATEST_FAIL_TTL = 3600  # an offline check is retried after an hour, not on every run
+MAX_RELEASE_HOURS = 1000000  # about 114 years; larger values would overflow date maths
 CAP_NOTE = "News search covered "
-SEV_ORDER = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1, "UNKNOWN": 0}
+SEV_ORDER = {"MALICIOUS": 5, "CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1, "UNKNOWN": 0}
 REDACTED = "<redacted>"
 LATEST_TTL = 24 * 3600
 STATE_DIR = ".stack-guard"
@@ -64,11 +66,13 @@ DEFAULT_TIME = "09:00"
 LABEL = "dev.stack-guard.watch"
 SECRET_WORD = re.compile(r"token|key|secret|password|auth", re.I)
 OSV_BATCH = "https://api.osv.dev/v1/querybatch"
-VERSION = "1.5.5"
+VERSION = "1.5.6"
+HIGH_SEVS = ("MALICIOUS", "CRITICAL", "HIGH")
 EOL_URL = "https://endoflife.date/api/%s.json"
 SKIP_DIRS = {"node_modules", "venv", "dist", "build", "worktrees", "__pycache__"}  # dot-folders are skipped too
 LATEST_URL = "https://raw.githubusercontent.com/SolanceLab/stack-guard/main/.claude-plugin/marketplace.json"
 AGENT_DENY = "Bash,Edit,Write,Read,Glob,Grep,Agent,Skill,NotebookEdit"
+DEFAULT_MIN_RELEASE_HOURS = 48
 NEWS_CAP = 80
 MAX_DEPTH = 6
 
@@ -199,25 +203,30 @@ def option_off(name, env=None):
     return v is not None and str(v).strip().lower() in OFF_WORDS
 
 
-def saved_option_off(name):
-    """True when the user's saved plugin setting says off. Reads only options.<name> of the stack-guard@* entries in
-    the user settings file, and nothing else in it. Missing or unreadable means on.
+def saved_option(name):
+    """The user's saved plugin setting `name`, or None. Reads only options.<name> of the stack-guard@* entries in
+    the user settings file, and nothing else in it. Missing or unreadable means None.
     shortcut: user settings only. Claude Code ignores pluginConfigs in project and local files (a cloned repo must not
     supply them), so this does too; add them here if the docs ever change."""
     base = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(home_dir(), ".claude")
     try:
         with open(os.path.join(base, "settings.json"), encoding="utf-8") as fh:
             configs = json.load(fh).get("pluginConfigs")
-        off = False
+        value = None
         for key in sorted(configs) if isinstance(configs, dict) else []:
             if key.startswith("stack-guard@") and isinstance(configs[key], dict):
                 opts = configs[key].get("options")
                 if isinstance(opts, dict) and name in opts:
-                    v = opts[name]
-                    off = v is False or (isinstance(v, (str, int)) and str(v).strip().lower() in OFF_WORDS)
-        return off
-    except Exception:  # unreadable or odd settings: the default is on
-        return False
+                    value = opts[name]
+        return value
+    except Exception:  # unreadable or odd settings: the default applies
+        return None
+
+
+def saved_option_off(name):
+    """True when the user's saved plugin setting says off."""
+    v = saved_option(name)
+    return v is False or (isinstance(v, (str, int)) and str(v).strip().lower() in OFF_WORDS)
 
 
 def update_check_off():
@@ -1501,7 +1510,15 @@ def cvss3_score(vector):
     return math.ceil(total * 10 - 1e-9) / 10  # shortcut: simple round-up, can differ by 0.1 from the official one
 
 
-def vuln_severity(vuln):
+def is_malicious_id(vuln, vid=None):
+    """OSV malware records have an id (or an alias) that starts with MAL-."""
+    ids = [vid, vuln.get("id")] + list(vuln.get("aliases") or [])
+    return any(isinstance(i, str) and i.upper().startswith("MAL-") for i in ids)
+
+
+def vuln_severity(vuln, vid=None):
+    if is_malicious_id(vuln, vid):
+        return "MALICIOUS"
     ds = vuln.get("database_specific")
     label = str(ds.get("severity", "")).upper() if isinstance(ds, dict) else ""
     label = {"MODERATE": "MEDIUM"}.get(label, label)
@@ -1635,7 +1652,7 @@ def osv_check(targets, cache_dir, errors):
             findings.append({
                 "key": "|".join([t["project"], t["ecosystem"], t["name"], t["version"], vid]),
                 "id": vid, "summary": str(v.get("summary") or "no summary available")[:200],
-                "severity": vuln_severity(v), "fixed": fixed_versions(v, t["ecosystem"], t["name"]),
+                "severity": vuln_severity(v, vid), "fixed": fixed_versions(v, t["ecosystem"], t["name"]),
                 "package": t["name"], "version": t["version"], "ecosystem": t["ecosystem"],
                 "project": t["project"], "dev": t["dev"], "deploy": t["deploy"], "tool": bool(t.get("tool"))})
     return findings
@@ -1778,13 +1795,19 @@ def group_findings(findings):
 
 
 def render_report(rep, diff):
-    red = [f for f in rep["findings"] if f["severity"] in ("HIGH", "CRITICAL") and f["deploy"] and not f["dev"]]
+    bad = [f for f in rep["findings"] if f["severity"] == "MALICIOUS"]
+    others = [f for f in rep["findings"] if f["severity"] != "MALICIOUS"]
+    red = [f for f in others if f["severity"] in HIGH_SEVS and f["deploy"] and not f["dev"]]
     red_keys = {f["key"] for f in red}
-    rest = [f for f in rep["findings"] if f["key"] not in red_keys and not f.get("tool")]
-    tool_findings = [f for f in rep["findings"] if f.get("tool")]
+    rest = [f for f in others if f["key"] not in red_keys and not f.get("tool")]
+    tool_findings = [f for f in others if f.get("tool")]
     L = ["# Stack Guard check, %s" % rep["date"], ""]
     if rep.get("update"):
         L += [rep["update"], ""]
+    if bad:
+        L += ["## Known malicious releases", "",
+              "Remove or replace these versions now, and rotate the keys this computer held if one of them ever ran.", ""]
+        L += group_findings(bad) + [""]
     L += ["Folder: `%s`" % rep["folder"], "", "## New since last check", ""]
     L += diff_lines(diff, True)
     L += ["", "## 🔴 Fix first", "", "High or critical problems in live packages of a project that has a deploy config.", ""]
@@ -1844,7 +1867,7 @@ def notify_text(rep, diff, prev=None, hidden=frozenset()):
     if rep["not_checked"]:
         head += "; some things were not checked"
     new_keys = {x["key"] for x in diff["new"] if x.get("key")}
-    hit = any(f["key"] in new_keys and f["severity"] in ("HIGH", "CRITICAL") and f["deploy"] and not f["dev"] for f in rep.get("findings", []))
+    hit = any(f["key"] in new_keys and (f["severity"] == "MALICIOUS" or f["severity"] in HIGH_SEVS and f["deploy"] and not f["dev"]) for f in rep.get("findings", []))
     lines = ([rep.get("update_short") or rep["update"]] if rep.get("update") else []) + [head] + ["- " + x["text"] for x in diff["new"] if x.get("key") not in hidden][:9]
     if hit:
         lines.append("Run /stack-guard to check whether these were used against you.")
@@ -2076,7 +2099,7 @@ def run_agents(inv, findings, diff, rep, errors, root=None):
         errors.append(text)
     keys = set(diff.get("new_keys", []))
     fresh = [f for f in findings if f["key"] in keys] if not diff["first"] else \
-        [f for f in findings if f["severity"] in ("HIGH", "CRITICAL") and f["deploy"] and not f["dev"]][:10]
+        [f for f in findings if f["severity"] in HIGH_SEVS and f["deploy"] and not f["dev"]][:10]
     fresh = [f for f in fresh if shareable(f, inv) and valid_name(f["ecosystem"], f["package"]) and valid_version(f["version"])]
     if fresh:
         ok, text = run_agent(cli, "explain", explain_prompt(fresh[:15]))
@@ -2125,9 +2148,12 @@ def cmd_check(folder, notify, agents=False):
         rep["not_checked"] = rep["not_checked"] + [n for n in rep["agent_notes"] if n.startswith(("agent step failed", CAP_NOTE))]
     write_file(os.path.join(reports, rep["date"] + ".md"), render_report(rep, diff))
     write_file(os.path.join(reports, rep["date"] + ".json"), json.dumps(rep, indent=1))
-    sev = [f for f in rep["findings"] if f["severity"] in ("HIGH", "CRITICAL")]
+    sev = [f for f in rep["findings"] if f["severity"] in HIGH_SEVS]
+    n_bad = sum(1 for f in rep["findings"] if f["severity"] == "MALICIOUS")
     n_cs = len(rep["committed_secrets"])
     print("Stack Guard check %s: %d known problems (%d high or critical)." % (rep["date"], len(rep["findings"]) + n_cs, len(sev) + n_cs))
+    if n_bad:
+        print("Known malicious releases: %d (shown first in the report; remove or replace them now)." % n_bad)
     if n_cs:
         print("Secret files committed to git: %d (see the report; rotate those keys first)." % n_cs)
     print("Report: %s/reports/%s.md" % (STATE_DIR, rep["date"]))
@@ -2145,6 +2171,86 @@ def cmd_check(folder, notify, agents=False):
         if status:
             print(status)
     return 2 if errors else 0
+
+
+# ---------------------------------------------------------------- release age (fixes wait until a release is old enough)
+
+def valid_hours(x):
+    return math.isfinite(x) and 0 <= x <= MAX_RELEASE_HOURS
+
+
+def min_release_hours(flag=None):
+    """Hours a release must be public before a fix may use it: --min-hours, then the environment, then the saved
+    setting, then 48. A value that is not a number of hours (zero or more) is skipped."""
+    for raw in (flag, os.environ.get("STACK_GUARD_MIN_RELEASE_HOURS"), os.environ.get("CLAUDE_PLUGIN_OPTION_MIN_RELEASE_HOURS"),
+                saved_option("min_release_hours")):
+        try:
+            if raw is not None and not isinstance(raw, bool) and valid_hours(float(raw)):
+                return float(raw)
+        except (TypeError, ValueError):
+            pass
+    return DEFAULT_MIN_RELEASE_HOURS
+
+
+def iso_utc(dt):
+    return dt.astimezone(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def parse_iso(text):
+    dt = datetime.datetime.fromisoformat(str(text).strip().replace("Z", "+00:00"))
+    return dt if dt.tzinfo else dt.replace(tzinfo=datetime.timezone.utc)
+
+
+def published_at(eco, name, version, fetch):
+    """When this exact version was last published (newest file for PyPI; aware datetime), or None when the registry does not say."""
+    if eco == "npm":
+        stamp = (fetch("https://registry.npmjs.org/" + urllib.parse.quote(name, safe="")).get("time") or {}).get(version)
+        return parse_iso(stamp) if stamp else None
+    data = fetch("https://pypi.org/pypi/%s/%s/json" % (urllib.parse.quote(name, safe=""), urllib.parse.quote(version, safe="")))
+    stamps = [u.get("upload_time_iso_8601") for u in data.get("urls") or [] if u.get("upload_time_iso_8601")]
+    return max(parse_iso(t) for t in stamps) if stamps else None  # newest file: pip may install any of them
+
+
+def release_age(eco, name, version, fetch, now, min_hours=DEFAULT_MIN_RELEASE_HOURS, may_look_up=True):
+    """Returns (exit code, one line). 0 = old enough, 3 = too new, 2 = not proven (never fail open)."""
+    eco = {"npm": "npm", "pypi": "PyPI"}.get(str(eco).lower())
+    if not eco or not valid_name(eco, name) or not valid_version(version):
+        return 2, "unknown: ecosystem, name or version not understood"
+    if not may_look_up:
+        return 2, "unknown: private package, release date not looked up"
+    try:
+        when = published_at(eco, name, version, fetch)
+    except Exception as e:
+        return 2, "unknown: release date could not be read (%s)" % err_name(e)
+    if when is None:
+        return 2, "unknown: no release date found for this version"
+    if not valid_hours(min_hours):
+        return 2, "unknown: minimum release age is not a usable number of hours"
+    hours = (now - when).total_seconds() / 3600
+    head = "%s %s: published %s, %d hours ago" % (name, version, iso_utc(when), max(int(hours), 0))
+    if hours >= min_hours:
+        return 0, head + " \u2014 OK"
+    return 3, head + " \u2014 TOO NEW, wait until " + iso_utc(when + datetime.timedelta(hours=min_hours))
+
+
+def may_look_up_name(eco, name, folder=None):
+    """Same privacy rules as the checks: the name leaves this computer only when it is public."""
+    inv = build_inventory(folder) if folder else None
+    projects = inv["projects"] if inv else []
+    if eco == "npm":
+        return npm_name_public(name) and name not in {n for p in projects for n in p["private_npm"]}
+    if global_private_index() or any(p.get("private_index") for p in projects):
+        return False
+    return norm_py(name) not in {n for p in projects for n in p.get("private_py", [])}
+
+
+def cmd_release_age(eco, name, version, folder, min_hours_flag):
+    eco_n = {"npm": "npm", "pypi": "PyPI"}.get(str(eco).lower())
+    ok_input = bool(eco_n and valid_name(eco_n, name) and valid_version(version))
+    code, line = release_age(eco, name, version, http_json, datetime.datetime.now(datetime.timezone.utc), min_release_hours(min_hours_flag),
+                             may_look_up=ok_input and may_look_up_name(eco_n, name, folder))
+    print(line)
+    return code
 
 
 # ---------------------------------------------------------------- watch (daily schedule)
@@ -2469,6 +2575,12 @@ def main(argv=None):
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("inventory").add_argument("folder", nargs="?", default=".")
     sub.add_parser("version-check")
+    ra = sub.add_parser("release-age", help="is this version old enough to install? (0 yes, 3 too new, 2 not proven)")
+    ra.add_argument("ecosystem")
+    ra.add_argument("name")
+    ra.add_argument("version")
+    ra.add_argument("--min-hours", default=None)
+    ra.add_argument("--folder", default=None, help="a project folder, so names marked private there are not looked up")
     c = sub.add_parser("check")
     c.add_argument("folder", nargs="?", default=".")
     c.add_argument("--notify", action="store_true")
@@ -2491,6 +2603,8 @@ def main(argv=None):
     try:
         if a.cmd == "version-check":
             return cmd_version_check()
+        if a.cmd == "release-age":
+            return cmd_release_age(a.ecosystem, a.name, a.version, a.folder, a.min_hours)
         if a.cmd == "inventory":
             return cmd_inventory(a.folder)
         if a.cmd == "check":

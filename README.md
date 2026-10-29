@@ -82,7 +82,7 @@ Best practice for **any** plugin, this one included, even from people you trust:
 6. **Finds secrets committed to git.** It looks in the usual secret files (`.mcp.json`, `.env`, keys, `.npmrc`, `.pypirc`) that git tracks, and in older commits, and names the key to rotate. It never prints a value.
 7. **Checks the tools on your computer.** `uv`, `pip`, `pipx`, `poetry`, `npm`, `pnpm`, `yarn`, plus the `certifi` copy inside each uv tool environment, are looked up like any package. `bun` and `deno` have no advisory feed and are listed under "Not checked".
 8. **Reports** what is internet-facing first, then what only runs on your computer, then what is clean.
-9. **Fixes, after your yes.** One fixer agent per project: same-major package upgrades with install scripts switched off (never `--force`), then it proves the project still passes its tests, builds, and works (website pages render, MCP servers still list their tools and refuse strangers). It also serves the project the way it is deployed (a Worker with `wrangler dev`, a Docker or Fly app from its image), because tests and a plain build can pass while the deployed runtime fails. Anything that breaks is put back. A major-version jump comes back to you as a question.
+9. **Fixes, after your yes.** One fixer agent per project: same-major package upgrades with install scripts switched off (never `--force`), then it proves the project still passes its tests, builds, and works (website pages render, MCP servers still list their tools and refuse strangers). It also serves the project the way it is deployed (a Worker with `wrangler dev`, a Docker or Fly app from its image), because tests and a plain build can pass while the deployed runtime fails. Anything that breaks is put back. A major-version jump comes back to you as a question. A fix also waits until the fixed version has been public for 48 hours (change it with the `min_release_hours` setting or `STACK_GUARD_MIN_RELEASE_HOURS`), because hijacked releases are usually caught and pulled within that time; the fixer tells you when to run again. After fixing, stack-guard checks the project again and undoes the fix if a known malicious release (an OSV `MAL-` record, flagged MALICIOUS and shown first) came in.
 
 **It never deploys, pushes, commits, upgrades Node/Python, or restarts services on its own.** It hands you the exact command and waits for your yes. Projects with unsaved changes are left alone.
 
@@ -107,13 +107,15 @@ The daily watch does not run these checks (no agent works unattended). It adds o
 
 ## Settings
 
-Three settings, all on by default. Change them when you install (`/plugin`), later with `/plugin configure stack-guard@stack-guard` or `/config`, or from a terminal install: `claude plugin install stack-guard@stack-guard --config reply_check=false`.
+Four settings (three switches, all on by default, and the fix release age, 48 hours). Change them when you install (`/plugin`), later with `/plugin configure stack-guard@stack-guard` or `/config`, or from a terminal install: `claude plugin install stack-guard@stack-guard --config reply_check=false`.
 
 | Setting | What turning it off means |
 | --- | --- |
 | `secret_guard` ("Secret guard") | All three secret-guard hooks stop before they read anything. Nothing is blocked or redacted. |
 | `reply_check` ("Final-reply check") | Only the Stop hook stops. It is the one that reads the session's history on this computer (nothing leaves the computer) to check each reply for secret shapes. The other two secret-guard hooks keep working. |
 | `update_check` ("Update check") | No daily request to GitHub for the version number: not at session start, not in `/stack-guard`, not in the daily watch. `version-check` says "Update check is turned off." |
+
+| `min_release_hours` ("Fix release age (hours)") | How long a fixed version must have been public before the fixer installs it (default 48). `0` takes new versions at once. `stack_guard.py release-age <npm\|PyPI> <name> <version>` shows the verdict; it asks the registry for public package names only. |
 
 `PLUGIN_UPDATE_CHECK=0` still turns the update check off too.
 

@@ -1,6 +1,6 @@
 {
   "name": "stack-guard",
-  "version": "1.5.5",
+  "version": "1.5.6",
   "description": "One-prompt security check and safe fix for everything you build and run with Claude Code.",
   "author": {
     "name": "SolanceLab"
@@ -36,6 +36,13 @@
       "title": "Update check",
       "description": "Once a day asks GitHub for stack-guard's version number (never code) at session start, at the start of /stack-guard and in the daily watch.",
       "default": true,
+      "required": false
+    },
+    "min_release_hours": {
+      "type": "number",
+      "title": "Fix release age (hours)",
+      "description": "A fix waits until the fixed version has been public this many hours, because hijacked releases are usually caught and pulled within a day or two.",
+      "default": 48,
       "required": false
     }
   }

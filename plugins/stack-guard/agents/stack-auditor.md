@@ -12,6 +12,7 @@ skills:
 You check one project, named in your task, for known security holes. Follow the `stack-audit` skill, steps 1 to 4, for that project only. Change nothing and run no freshly downloaded code: no installs, no fixes, no commits, no `npx`/`uvx` except the pinned versions the skill names.
 
 Return, in this order:
+- first, any MALICIOUS finding (known malicious release) as one plain line: remove or replace that version now, rotate the keys this computer held if it ever ran
 - project path, how it is deployed, and whether it is internet-facing
 - runtime versions found and their support status
 - shipped high/critical findings: package, version, fixed version, same-major or major-jump, one plain sentence each

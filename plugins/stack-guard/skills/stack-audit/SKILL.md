@@ -59,6 +59,8 @@ After the package checks, do the news check. In Claude Code, hand the packaged `
 
 ## 5. Report
 
+Lead with any MALICIOUS finding (a known malicious release, shown first in the script's report) as one plain line: remove or replace that version now, and rotate the keys this computer held if it ever ran. Add no detail on how it works.
+
 ```
 STACK GUARD REPORT — <date>
 Checked: <N> projects · <N> live (confirmed) · <N> deploy configs · <N> packages · <N> MCP servers · runtimes: <list>

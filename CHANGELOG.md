@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.5.6
+
+- Fixes wait until a fixed version has been public for 48 hours (adjustable), because hijacked releases are usually caught and pulled within that time; the fixer says when to run again.
+- Known malicious releases (OSV `MAL-` records) are flagged as MALICIOUS and shown first, instead of as unknown severity.
+- After fixing, stack-guard checks the project again and undoes the fix if a known malicious release came in.
+
 ## 1.5.5
 
 - Secret guard hardening: catches more ways of reading or sending a secret file (including wildcard and brace forms) and environment dumps; whole-folder content searches need a file type or a single file while stack-guard is in use.
