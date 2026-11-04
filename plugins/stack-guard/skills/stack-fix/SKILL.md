@@ -19,7 +19,7 @@ Goal: close the holes without breaking anything, and leave a clear trail. The us
 ## Fix, safest first, install scripts off
 
 **Release age first (every ecosystem).** Before applying any fixed version, run `python3 <plugin>/scripts/stack_guard.py release-age <npm|PyPI> <name> <fixed version> --folder "<project>"`.
-- Exit 0 (OK): apply exactly that version and no other. Every command below installs the checked `<fixed version>` pinned (exact version, no caret range, no "latest"); a command that cannot pin it (`npm audit fix`, `bun update`, a bare `uv lock --upgrade-package`) may pick a newer release that was never age-checked, so run it only when `release-age` also passes for each version it then installed (read them from the lockfile diff), and otherwise restore the backup and use the pinned form.
+- Exit 0 (OK): apply exactly that version and no other. Every command below installs the checked `<fixed version>` pinned (exact version, no caret range, no "latest"); a command that cannot pin it (`npm audit fix`, `bun update`, a bare `uv lock --upgrade-package`) may pick a newer release that was never age-checked, so run it only when `release-age` also passes for each version it then installed (run the `lock-check` step below on the changed lockfile when it is a supported type), and otherwise restore the backup and use the pinned form.
 - Exit 3 (TOO NEW): leave that package alone and report "fix released <H> hours ago; run again after <time>". Take the brand-new version only when the user explicitly said to take brand-new versions now, and then state the risk in one line (a hijacked release is usually pulled within a day or two).
 - Exit 2 (not proven): leave that package alone and report the printed reason as not proven old enough.
 
@@ -28,6 +28,20 @@ Goal: close the holes without breaking anything, and leave a clear trail. The us
 - **Python**: install from ready-made wheels only, so no freshly downloaded build code runs. With a lockfile, use its tool so the lock stays the truth: `uv lock --upgrade-package <pkg>`, then check the locked version equals `<fixed>` (when it is newer, run `release-age` on it too, or pin `<pkg>==<fixed>` in `pyproject.toml` first), then `uv sync --no-build`; Poetry and pipenv projects are **report-only**: give the exact command (`poetry update <pkg>` / `pipenv update <pkg>`), say that it may build the package from source, and ask before running it. With `requirements.txt`: set `<pkg>==<fixed>` in the file, keeping any upper bound, then `<venv python> -m pip install --only-binary=:all: -r requirements.txt`. A bare venv: `<venv python> -m pip install --only-binary=:all: "<pkg>==<fixed>"`, after saving `pip freeze` to scratch. When a package has no wheel for this computer, leave it and report it.
 - **Major-version jump needed** → leave it; report what the jump would change and let the user decide.
 - **Runtime or system packages** (Node/Python version, `brew`/`apt` packages, Docker base image): do not change them under this yes. Report the exact command (eg. `brew upgrade python@3.14`, `nvm install 22`, Dockerfile `FROM node:22-slim`) and ask separately.
+
+## After every install step: lock-check
+
+Every install can pull in other versions than the one you chose (transitive packages, `npm audit fix`, a lockfile refresh). `lock-check` reads `package-lock.json`, `uv.lock`, `poetry.lock`, `Pipfile.lock` and pinned `requirements*.txt` only. After each install step in a project with one of those, run:
+
+`python3 <plugin>/scripts/stack_guard.py lock-check "<backup lockfile>" "<current lockfile>" --folder "<project>"`
+
+It prints one line per added or changed version with its release age and malware check, and exits:
+- **4 (malicious)**: restore the backup and stop. Put the malicious release first in the hand-back.
+- **3 (too new)**: pin each too-new package back to the version the backup had (npm `overrides`, pip `==`), install again, and re-run `lock-check`. When it still fails, restore the backup.
+- **2 (not proven or a lookup failed)**: restore the backup and report what could not be proven. This is fail-closed: never carry on after a 2.
+- **0**: carry on.
+
+**pnpm, yarn and bun lockfiles** (`pnpm-lock.yaml`, `yarn.lock`, `bun.lock`, `bun.lockb`) are not read yet: `lock-check` exits 2 on them. Instead, diff the lockfile against the backup yourself and run `release-age` on every version it gained or changed, not only the one you chose. Fail closed: when you cannot list the changed versions or any check is not proven, restore the backup and report it.
 
 ## Prove it still works
 
@@ -51,5 +65,7 @@ Put it back exactly: restore the backed-up files from scratch over the changed o
 Stop every server, preview, and container you started; remove Docker images you built; delete scratch folders. Leave deliberate locks alone: a route that answers 404 or 401 on purpose (a paywall, an embargo, a login) is working, not broken.
 
 ## Hand back
+
+**Same pin elsewhere.** After adding an override or a pin, search the project for other `package.json` and `requirements*.txt` files that declare the same package (eg. a `release/` or `public/` copy). List each one in the hand-back as "same bump needed here" with its path. Edit none of them automatically.
 
 Per project: packages changed (old → new), audit/tests/build before and after, leftovers and whether they appear in the built output, what needs a separate yes (runtime, service restart, major jump) with the exact command, and the deploy command from the project's own scripts. Commit only when the user asks ("Security update: <packages>"). After the user deploys, offer to check that the live site or service answers as before.

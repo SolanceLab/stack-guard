@@ -8,9 +8,14 @@ Use GitHub's private vulnerability reporting: open the Security tab of this repo
 
 Every security fix, by version, in plain words.
 
+- **1.6.3** - A fixer install can no longer slip in a too-new or known-malicious version unnoticed: `lock-check` checks every version a lockfile gained and fails closed when it cannot prove a release is old enough. Background services are now listed and checked, including those reachable from the internet through a tunnel.
 - **1.6.2** - The daily watch's self-refresh accepts a newer script only from your own plugin folders, with every folder up to your home folder yours and not writable by others (on Windows the location is checked, not file permissions). Found by automatic review.
 - **1.6.1** - Three ways a shell command could get past the secret guard were closed. Found by automatic review.
 - **1.5.7** - Release-age lookups for Python packages now fail closed: when the check cannot prove a release is old enough, it says so and does not allow the fix. Found by automatic review.
 - **1.5.6** - Fixes wait until a fixed version has been public for a safe time, and known malicious releases are shown first.
 - **1.5.5** - Secret-guard bypasses were closed, private package names no longer go to the public vulnerability database (OSV), and symlinked inputs are no longer followed outside the scanned folder. Reported privately by Marta S. with Cassian Varen. Advisory: GHSA-fxh7-86f2-jmfp.
 - **1.5.1 and 1.5.2** - A hostile git configuration in a scanned folder could start a program. Found by automatic review.
+
+## Known limits
+
+- The secret guard reads the text of a shell command. A file name built while the command runs (for example from `printf` or another program's output) cannot be seen, so the guard is not the only wall: Claude Code's sandbox (`/sandbox`) and file permissions are the others.

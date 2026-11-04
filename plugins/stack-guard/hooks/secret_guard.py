@@ -249,7 +249,72 @@ def explicit_paths_only(args, has_pattern_flag):
     pos = [t for t in args if not t.startswith("-")]
     paths = pos if has_pattern_flag else pos[1:]
     return bool(paths) and not any(p.rstrip("/") in BROAD_PATHS or p in BROAD_PATHS or is_secret_path(p)
-                                   or p.endswith("/.") or p.startswith("~") for p in paths)
+                                   or p.endswith("/.") or p.startswith("~") or folder_holds_secret(p) for p in paths)
+
+
+FILE_READERS = READERS | {"gawk", "mawk", "nl", "tac"}
+UNEXPANDED = re.compile(r"\$[0-9A-Za-z_{(@*#?]|\$\(|__SUBST\d+__|`")
+# Options whose next word is their value, never a file position. -f/--file/--pre/--ignore-file are left out on purpose:
+# their value is a file, so a variable there stays "unsure" and blocks.
+_AWK = ("-F", "-v")
+_GREP = ("-m", "-A", "-B", "-C", "-e", "-d", "-D", "--max-count", "--context", "--after-context", "--before-context",
+         "--include", "--exclude", "--exclude-dir", "--label", "--regexp")
+_RG = ("-m", "-A", "-B", "-C", "-e", "-g", "-t", "-T", "-j", "-M", "-E", "--threads", "--max-count", "--glob", "--type",
+       "--type-not", "--max-columns", "--encoding", "--context", "--regexp", "--max-depth", "--max-filesize", "--sort",
+       "--sortr", "--color", "--colors", "--path-separator")
+VALUE_OPTS = {"head": ("-n", "-c", "--lines", "--bytes"), "tail": ("-n", "-c", "--lines", "--bytes"),
+              "awk": _AWK, "gawk": _AWK, "mawk": _AWK, "grep": _GREP, "rg": _RG,
+              "sed": ("-e", "-l"), "sort": ("-k", "-t", "-o", "-S", "-T", "--key", "--field-separator", "--output"),
+              "cut": ("-d", "-f", "-c", "-b"), "diff": ("-U", "-C", "--label")}
+
+
+FILE_VALUE_OPTS = {"grep": ("-f",), "rg": ("-f",), "awk": ("-f",), "gawk": ("-f",), "mawk": ("-f",), "sed": ("-f",)}
+
+
+def is_option_value(main, seg, i):
+    """True when word i is the separate value of the option before it (-F $SEP, --lines $N, -rn $N). In a short
+    cluster the first option that takes a value swallows the rest of the token, so only a value-taking LAST letter
+    leaves the next word as its value (grep -em $F: -e takes "m", so $F is a file)."""
+    if "--" in seg[1:i]:
+        return False  # after the end-of-options marker every word is a file (sort -- -k $F reads $F)
+    prev = seg[i - 1]
+    values = VALUE_OPTS.get(main, ())
+    if prev in values:
+        return True
+    if not prev.startswith("-") or prev.startswith("--") or len(prev) <= 2 or "=" in prev:
+        return False
+    takes = {o[1] for o in values + FILE_VALUE_OPTS.get(main, ()) if len(o) == 2}
+    for j, c in enumerate(prev[1:]):
+        if c.isdigit():
+            return False
+        if c in takes:
+            return j == len(prev) - 2 and ("-" + c) in values  # last letter and not a file option
+    return False
+
+
+def variable_file_arg(main, seg, k, skip):
+    """The file word that holds an unexpanded $VAR, ${VAR} or $( ), for a command that reads files. What it expands to
+    cannot be judged here, so the command is unsure and blocks; the fix is to write the path directly."""
+    ended = False
+    for i in range(k + 1, len(seg)):
+        t = seg[i]
+        if t == "--" and not ended:
+            ended = True  # end of options: every later word is a file, dashes and all
+            continue
+        if i in skip or (t.startswith("-") and not ended) or not UNEXPANDED.search(t):
+            continue  # a joined value (--lines=$N, -n$N) starts with "-" and lands here too
+        if is_option_value(main, seg, i):
+            continue  # head -n $N, awk -F $SEP: an option's value, not a file
+        return t
+    return None
+
+
+def folder_holds_secret(p):
+    """True when a named folder holds a protected file anywhere below it, or is too big to check (bounded walk).
+    A recursive search over it could print that file's lines; when unsure, block."""
+    if GLOB_CHARS.search(p) or BRACE_EXPANSION.search(p) or UNEXPANDED.search(p):
+        return True
+    return os.path.isdir(os.path.expanduser(p)) and bool(protected_file_selected(p, None, None))
 
 
 def recursive_unfiltered(head, seg):
@@ -584,6 +649,301 @@ def process_listing_violation(head, seg):
     return None
 
 
+# --- Words that are not file names: a search pattern, an awk/sed program, an interpreter's code string. -------------
+# A word is skipped only in such a position, read after shell quoting is removed. Brace words are never skipped (every
+# variant is checked), a word that is a plain secret name is never skipped, and an option this table does not know
+# makes the whole command "unsure", which keeps the strict check.
+SEARCH_VALUE_LONG = {"--regexp", "--file", "--max-count", "--after-context", "--before-context", "--context", "--include",
+                     "--exclude", "--exclude-dir", "--exclude-from", "--label", "--directories", "--devices",
+                     "--binary-files", "--glob", "--iglob", "--type", "--type-not", "--threads", "--max-columns", "--pre",
+                     "--pre-glob", "--ignore-file", "--replace", "--max-depth", "--encoding", "--sort", "--sortr",
+                     "--max-filesize", "--type-add", "--type-clear", "--engine", "--path-separator", "--colors"}
+SEARCH_BOOL_LONG = {"--recursive", "--dereference-recursive", "--ignore-case", "--no-ignore-case", "--invert-match",
+                    "--word-regexp", "--line-regexp", "--count", "--files-with-matches", "--files-without-match",
+                    "--only-matching", "--quiet", "--silent", "--no-messages", "--line-number", "--with-filename",
+                    "--no-filename", "--null", "--null-data", "--text", "--initial-tab", "--byte-offset",
+                    "--extended-regexp", "--fixed-strings", "--basic-regexp", "--perl-regexp", "--hidden", "--no-ignore",
+                    "--no-ignore-vcs", "--unrestricted", "--smart-case", "--case-sensitive", "--no-heading", "--heading",
+                    "--no-line-number", "--color", "--colour", "--no-color", "--follow", "--column", "--json", "--stats",
+                    "--trim", "--vimgrep", "--multiline", "--pretty", "--line-buffered", "--no-config", "--help",
+                    "--version", "--files", "--debug", "--no-unicode", "--crlf"}
+PATTERN_CHARS = re.compile(r"[*?\[\](){}\\^$|+;<>=\s\"']")
+SEARCH_VALUE_SHORT = {"grep": set("efmABCdD"), "rg": set("efgtTmABCjMEdr"), "ag": set("efgtTmABCjMEdrGpW")}
+SEARCH_BOOL_SHORT = {"grep": set("EFGPiIvwxyrRnHhLlcoqsaTuUzZbV0123456789"),
+                     "rg": set("abcFhHiIlLnNopPqsSuUvVwxz0123456789"),
+                     "ag": set("abcFhHiIlLnNopPqsSuUvVwxz0123456789")}
+# awk and sed: (short letters without a value, short letters with a value, letters that give the program,
+#               long options without a value, long options with a value)
+PROG_OPTS = {
+    "awk": (set("bcCghMnNOPrsStV"), set("FvfeiEl"), set("fe"),
+            {"--posix", "--traditional", "--lint", "--version", "--help", "--sandbox", "--re-interval",
+             "--characters-as-bytes", "--csv"},
+            {"--file", "--source", "--field-separator", "--assign"}),
+    "sed": (set("nErsuzb"), set("efl"), set("ef"),
+            {"--quiet", "--silent", "--regexp-extended", "--null-data", "--separate", "--posix", "--debug", "--sandbox",
+             "--unbuffered", "--follow-symlinks", "--binary", "--help", "--version", "--in-place"},
+            {"--expression", "--file", "--line-length"}),
+}
+PROG_OPTS["gawk"] = PROG_OPTS["mawk"] = PROG_OPTS["awk"]
+REDIRECT_WORD = re.compile(r"[<>&|;]+")
+CODE_READS = re.compile(r"\w*(?:open|read|glob|listdir|scandir|walk|path|system|popen|subprocess|exec|eval|import|dotenv|"
+                        r"fnmatch|copy|shutil|require|print|puts|say|console|echo)\w*|\bcat\b|\bsh\b|\bsource\b|[<>`]", re.I)
+INTERPRETER_CODE_FLAG = (  # head pattern, flag pattern (the code string is the next word)
+    (re.compile(r"python[\d.]*"), re.compile(r"-[A-Za-z]*c")),
+    (re.compile(r"node(js)?|ruby|perl"), re.compile(r"-[A-Za-z]*[eEp]|--eval|--print")))
+
+
+# A construct that builds a name at run time only matters beside a file operation (print(chr(65)) is harmless).
+FILE_OPS = re.compile(r"\w*(?:open|read|glob|listdir|scandir|walk|path|system|popen|subprocess|exec|eval|import|dotenv|"
+                      r"fnmatch|copy|shutil|require|child_process)\w*|\bfs\b|\bos\b|\bFile\b|\bIO\b|\bDir\b|\bcat\b|\bsh\b|"
+                      r"\bsource\b|[<>`]", re.I)
+
+
+def plain_secret_name(tok):
+    """A word with no pattern characters at all that names a secret file: always checked as a file."""
+    return not PATTERN_CHARS.search(tok) and is_secret_path(tok)
+
+
+PROGRAM_RUNS = re.compile(r"system\s*\(|getline|popen|\|&|\|\s*[\"$(]|@load|@include|\bARGV\b|\bARGC\b|\bFILENAME\b|\bENVIRON\b|"
+                          r"(?:^|[;{}\n\s\d$!/])[eE](?:\s|$|;|\})|"  # sed e: run a command
+                          r"(?:^|[;{}\n\s\d$!/])[rRwW]\s*[^\s;}]|"  # sed r R w W: read or write a file
+                          r"s(.).*\1.*\1\w*[ew]", re.S)  # s///e runs a command, s///w writes a file
+
+
+def prose_mention(text):
+    """The protected path that plain text (an awk/sed program, a heredoc body written to a file) names, or None.
+    Only glob and regex characters are relaxed: a word with them passes unless it is a plain secret name, and the bare
+    file name 'credentials' counts only inside a secret folder (the .aws one), so 'hostnames/ids/credentials' in prose passes."""
+    text = text.replace("\\", "")
+    for tok in text.split():
+        base = [tok.strip(".,;:!?)]}'\"")] + MENTION_SPLIT.findall(tok)
+        for c in base + [re.sub(r"/[A-Za-z]*$", "", x.lstrip("/")) for x in base]:  # also the name inside a sed address: /~/.ssh/id_rsa/p
+            if not c or c == "credentials":
+                continue
+            if GLOB_CHARS.search(c) and not plain_secret_name(c):
+                continue
+            if c.rsplit("/", 1)[-1] in ("credentials", "credentials.json") and not any(m in c for m in SECRET_DIR_MARKS):
+                continue
+            if is_secret_path(c):
+                return c
+    return None
+
+
+def not_a_file(i, seg, skip):
+    """True when word i sits in a non-file position and cannot be a file (no brace variant, not a plain secret name)."""
+    return i in skip and not BRACE_EXPANSION.search(seg[i]) and not plain_secret_name(seg[i])
+
+
+def short_option(t, i, seg, values, bools):
+    """Read one short-option word. Returns (next index, value index or None, value letter) or None when unsure."""
+    for j, ch in enumerate(t[1:], 1):
+        if ch in values:
+            if j + 1 < len(t):  # attached: -A5
+                return i + 1, None, ch
+            return (i + 2, i + 1, ch) if i + 1 < len(seg) else None
+        if ch not in bools:
+            return None
+    return i + 1, None, ""
+
+
+def search_positions(main, seg, k):
+    """Indexes of grep/rg/ag words that are patterns (not files); empty when anything is unsure."""
+    values, bools = SEARCH_VALUE_SHORT[main], SEARCH_BOOL_SHORT[main]
+    skip, positional, pattern_opt, i, ended = set(), [], False, k + 1, False
+    while i < len(seg):
+        t = seg[i]
+        if REDIRECT_WORD.fullmatch(t):
+            i += 2  # an operator and the word after it are not arguments of the search
+        elif ended or not t.startswith("-") or t == "-":
+            positional.append(i)
+            i += 1
+        elif t == "--":
+            ended, i = True, i + 1
+        elif t.startswith("--"):
+            name, eq, _ = t.partition("=")
+            if name in ("--regexp", "--file"):
+                pattern_opt = True
+                if name == "--regexp":
+                    skip.add(i if eq else i + 1)
+            if name in SEARCH_VALUE_LONG:
+                i += 1 if eq else 2
+            elif name in SEARCH_BOOL_LONG:
+                i += 1
+            else:
+                return set()
+        else:
+            got = short_option(t, i, seg, values, bools)
+            if got is None:
+                return set()
+            i, val, letter = got
+            if letter in ("e", "f"):
+                pattern_opt = True
+                if letter == "e":
+                    skip.add(val if val is not None else i - 1)
+    if not pattern_opt and positional:
+        skip.add(positional[0])  # the first plain word is the pattern; every later one is a file
+    return {n for n in skip if n < len(seg)}
+
+
+def program_positions(main, seg, k):
+    """Indexes of the awk/sed program text (code, not a file); empty when anything is unsure. File words stay checked."""
+    bools, values, programs, long_bool, long_value = PROG_OPTS[main]
+    skip, positional, program_opt, i, ended = set(), [], False, k + 1, False
+    while i < len(seg):
+        t = seg[i]
+        if REDIRECT_WORD.fullmatch(t):
+            i += 2
+        elif ended or not t.startswith("-") or t == "-":
+            positional.append(i)
+            i += 1
+        elif t == "--":
+            ended, i = True, i + 1
+        elif t.startswith("--"):
+            name, eq, _ = t.partition("=")
+            if name in long_value:
+                program_opt = program_opt or name in ("--file", "--source", "--expression")
+                if name in ("--source", "--expression"):
+                    skip.add(i if eq else i + 1)
+                i += 1 if eq else 2
+            elif name in long_bool:
+                i += 1
+            else:
+                return set()
+        elif main == "sed" and t[1:2] == "i":
+            i += 1  # in-place; the rest of the word is a backup suffix
+        else:
+            got = short_option(t, i, seg, values, bools)
+            if got is None:
+                return set()
+            i, val, letter = got
+            if letter in programs:
+                program_opt = True
+                if letter == "e":
+                    skip.add(val if val is not None else i - 1)
+    if not program_opt and positional:
+        skip.add(positional[0])
+    return {n for n in skip if n < len(seg)}
+
+
+def code_positions(main, seg, k):
+    """Indexes of an interpreter's -c/-e code string."""
+    for head, flag in INTERPRETER_CODE_FLAG:
+        if head.fullmatch(main):
+            return {i + 1 for i in range(k + 1, len(seg) - 1) if flag.fullmatch(seg[i])}
+    return set()
+
+
+PLAIN_CALL = re.compile(r"[ \t]*[A-Za-z]\w*(?:\.[A-Za-z]\w*)*\([\w \t,=\[\].]*\)[ \t]*")
+PLAIN_LITERAL = re.compile(r"""'[^'\\\n]*'|"[^"\\\n]*\"""")
+
+
+def plain_data_call(tok):
+    """True for one call holding only literal strings, lists and keyword names: no nested call, no joined strings, no
+    dunder lookup. Only such a code string may carry a bare glob; code built up at run time keeps every check."""
+    flat = PLAIN_LITERAL.sub("S", tok)
+    return bool(PLAIN_CALL.fullmatch(flat)) and "__" not in flat and not re.search(r"S[ \t]*S", flat)
+
+
+BUILDS_NAMES = re.compile(r"""['"]\s*\+\s*['"]|['"]\s*['"]|\bchr\s*\(|\bjoin\s*\(|\\x[0-9a-fA-F]{2}|\\[0-7]{3}|\bgetattr\s*\(|"""
+                          r"""\bfromhex\s*\(|\bb64decode\s*\(|\bfromCharCode\b|\bcompile\s*\(""")
+
+
+# Reaching a function by name at run time can open a file without saying "open", so it blocks alone.
+INDIRECT_CALL = re.compile(r"\bgetattr\s*\(|__builtins__|\bbuiltins\b|\bglobals\s*\(|\bvars\s*\(")
+
+
+def code_mention(tok):
+    """The protected path a code string names. Code that can read or list files keeps every check; code that cannot
+    (only a plain call that carries data) may hold a bare glob such as '*.json'. A plain secret name always counts."""
+    reads = bool(CODE_READS.search(tok)) or not plain_data_call(tok)  # shortcut: literal-only call shape; widen if real work needs more
+    if reads and BUILDS_NAMES.search(tok) and (FILE_OPS.search(tok) or INDIRECT_CALL.search(tok)):
+        return "code that builds a file name at run time"  # unsure: a name put together from pieces cannot be judged, so block
+    pieces = ([] if re.search(r"[\s\"'(),]", tok) else [tok]) + MENTION_SPLIT.findall(tok)
+    for c in pieces:
+        if c == "credentials":
+            continue
+        if not reads and GLOB_CHARS.search(c) and not plain_secret_name(c):
+            continue
+        if is_secret_path(c):
+            return c
+    return None
+
+
+def word_skips(main, seg, k):
+    """(indexes skipped as non-file words, indexes judged as code) for the command that starts at seg[k]."""
+    if main in SEARCH_VALUE_SHORT:
+        return search_positions(main, seg, k), set()
+    if main in PROG_OPTS:
+        return program_positions(main, seg, k), set()
+    return set(), code_positions(main, seg, k)
+
+
+SAFE_HEREDOC = re.compile(r"(?<!<)<<(?!<)-?\s*(['\"]?)(\w+)\1")
+
+
+def heredoc_feeds_file(line):
+    """True when the command line that opens a heredoc is `cat > file`, `cat >> file` or `tee ...` with nothing piped on
+    and no process substitution (`>(cmd)` runs the body as a command, so it never counts as a file)."""
+    if ">(" in line or "<(" in line:
+        return False
+    for seg, sep in segments_sep(line):
+        if "<<" not in seg and not any(t.startswith("<<") for t in seg):
+            continue
+        if sep in ("|", "|&"):
+            return False
+        words = [t for t in seg if not re.fullmatch(r"[A-Za-z_]\w*=.*", t)]
+        head = os.path.basename(words[0]) if words else ""
+        return head == "tee" or (head == "cat" and any(t in (">", ">>") for t in seg))
+    return False
+
+
+INERT_HEADS = {"cat", "tee", "echo", "printf", "ls", "pwd", "cd", "mkdir", "touch", "true", "false", ":", "wc", "head",
+               "tail", "sort", "uniq", "diff", "stat", "date", "test", "["}
+
+
+def runs_something(text):
+    """True unless every command in the text is a plain one that cannot run a file the heredoc may have written
+    (make, git hooks, npm scripts, a shell, an interpreter, a script). When unsure, True."""
+    for seg in (seg for line in text.split("\n") for seg, _ in segments_sep(line)):
+        words = [t for t in seg if not re.fullmatch(r"[A-Za-z_]\w*=.*", t)]
+        if not words:
+            continue
+        if os.path.basename(words[0]) not in INERT_HEADS or words[0].startswith(("./", "../")):
+            return True
+    return False
+
+
+def safe_heredoc_text(cmd, hits=None):
+    """Drop the body of a heredoc that only feeds `cat >`/`>>` or `tee` (nothing piped on) and cannot expand (no $ or
+    backtick unless the delimiter is quoted), when the rest of the command runs no shell, interpreter or script.
+    Any other heredoc keeps its body, so it is checked as before."""
+    if "<<" not in cmd:
+        return cmd
+    lines, out, i, dropped = cmd.split("\n"), [], 0, False
+    while i < len(lines):
+        line = lines[i]
+        out.append(line)
+        i += 1
+        found = list(SAFE_HEREDOC.finditer(line))
+        if len(found) != 1:
+            continue
+        m = found[0]
+        end = next((n for n in range(i, len(lines)) if lines[n].strip() == m.group(2)), None)
+        if end is None:
+            continue
+        body = "\n".join(lines[i:end])
+        if (not m.group(1) and ("$" in body or "`" in body)) or not heredoc_feeds_file(line):
+            continue
+        mention = prose_mention(body)  # a body that is written to a file is still scanned: any secret path in it blocks
+        if mention and hits is not None:
+            hits.append(mention)
+        i, dropped = end + 1, True
+    if not dropped:
+        return cmd
+    rest = "\n".join(out)
+    return cmd if runs_something(rest) else rest
+
+
 def bash_violation(cmd, bodies=None, depth=0):
     """Check the words as written, then again with extglob groups read as wildcards; a hit on either blocks."""
     bodies = [] if bodies is None else bodies
@@ -591,7 +951,10 @@ def bash_violation(cmd, bodies=None, depth=0):
 
 
 def bash_violation_pass(cmd, bodies, depth, normalise):
-    cmd = hoist_substitutions(cmd, bodies)
+    heredoc_hits = []
+    cmd = hoist_substitutions(safe_heredoc_text(cmd, heredoc_hits), bodies)
+    if heredoc_hits:
+        return heredoc_hits[0]
     parts = list(segments_sep(cmd, normalise))
     shadowed = shadowed_consumers(cmd)
     for n, (seg, sep) in enumerate(parts):
@@ -655,10 +1018,22 @@ def bash_violation_pass(cmd, bodies, depth, normalise):
         # Only plain text tools may feed the consumer: an interpreter could also copy the secret to stderr.
         piped = (sep == "|" and n + 1 < len(parts) and main in PIPE_PRODUCERS
                  and is_consumer(parts[n + 1][0], final=parts[n + 1][1] != "|", shadowed=shadowed))
+        skip, code = word_skips(main, seg, k)
+        if main in FILE_READERS:
+            var = variable_file_arg(main, seg, k, skip)
+            if var:
+                return "an unexpanded variable in a file argument (%s): write the path directly" % var
         for i, t in enumerate(seg):
             if is_exclusion(main, seg, i):
                 continue  # the pattern of an exclude option names what to skip
-            hit = secret_mention(t)
+            if main in PROG_OPTS and i in skip:  # an awk/sed program is code: a secret path in it is a hit, only glob/regex characters relax
+                hit = secret_mention(t) if (PROGRAM_RUNS.search(t) or BRACE_EXPANSION.search(t)) else prose_mention(t)
+                if hit and not mention_ok(main, seg, i, piped):
+                    return hit
+                continue
+            if not_a_file(i, seg, skip):
+                continue  # a search pattern is text; its file words are still checked
+            hit = code_mention(t) if i in code else secret_mention(t)
             if hit and not mention_ok(main, seg, i, piped):
                 return hit
     return None
@@ -732,6 +1107,9 @@ def protected_file_selected(root, file_glob, exts):
         return None  # a protected single file was already refused by name
     start, seen = time.monotonic(), 0
     for here, dirs, files in os.walk(root, followlinks=False):
+        # grep -R follows a symlinked folder and may read a secret behind it; unsure, so refuse (narrow the search)
+        if any(os.path.islink(os.path.join(here, d)) for d in dirs if d not in WALK_SKIP):
+            return "narrow:search"
         dirs[:] = [d for d in dirs if d not in WALK_SKIP
                    and not (d == "node_modules" and gitignores_node_modules(here)) and not (  # a Windows junction is a link os.walk may still enter
             hasattr(os.path, "isjunction") and os.path.isjunction(os.path.join(here, d)))]

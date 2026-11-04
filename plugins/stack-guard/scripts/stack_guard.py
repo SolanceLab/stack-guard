@@ -9,6 +9,7 @@ Python 3.9+, standard library only. Run:  python3 stack_guard.py <command> [fold
                          runtime support dates (endoflife.date); writes a dated report
   check --notify         also send a desktop notification (and a webhook if you set one)
   check --agents         also run a news-search agent and a plain-words explainer (your own claude or codex CLI)
+  lock-check BEFORE AFTER  age + malware check of every version a lockfile gained (exit 0 clean, 3 too new, 4 malicious, 2 not proven)
   version-check          say whether a newer stack-guard is out (asks GitHub once a day, sends nothing about you)
   webhook-set [folder]   read a Discord or Slack webhook address from stdin and keep it outside the project
   webhook-remove [folder]
@@ -60,14 +61,14 @@ REDACTED = "<redacted>"
 LATEST_TTL = 24 * 3600
 STATE_DIR = ".stack-guard"
 CACHE_DAYS = 7
-EOL_PRODUCTS = {"node": "nodejs", "python": "python"}
+EOL_PRODUCTS = {"node": "nodejs", "python": "python", "postgres": "postgresql"}
 AGENT_TIMEOUT = 300
 DEFAULT_TIME = "09:00"
 LABEL = "dev.stack-guard.watch"
 DEEPER_HOW = "to scan it, run stack-guard on that folder directly, or add --depth N to check or inventory"
 SECRET_WORD = re.compile(r"token|key|secret|password|auth", re.I)
 OSV_BATCH = "https://api.osv.dev/v1/querybatch"
-VERSION = "1.6.2"
+VERSION = "1.6.3"
 HIGH_SEVS = ("MALICIOUS", "CRITICAL", "HIGH")
 EOL_URL = "https://endoflife.date/api/%s.json"
 SKIP_DIRS = {"node_modules", "venv", "dist", "build", "worktrees", "__pycache__"}  # dot-folders are skipped too
@@ -330,6 +331,12 @@ def add_pkg(proj, eco, name, version, dev, lockfile):
 
 # ---------------------------------------------------------------- inventory: project files
 
+def npm_entry_name(key, entry):
+    """The real package name of a package-lock entry: its own "name" when present (an alias such as node_modules/foo that installs bar), else the folder name."""
+    own = entry.get("name")
+    return own if isinstance(own, str) and own else key.rsplit("node_modules/", 1)[1]
+
+
 def parse_npm_lock(path, label, proj, inv):
     data = load_json(path, inv, label)
     if not isinstance(data, dict):
@@ -343,7 +350,7 @@ def parse_npm_lock(path, label, proj, inv):
             continue
         version = entry.get("version")
         if version:
-            name = key.rsplit("node_modules/", 1)[1]
+            name = npm_entry_name(key, entry)
             add_pkg(proj, "npm", name, str(version), entry.get("dev") is True, "package-lock.json")
             resolved = str(entry.get("resolved") or "")
             if not npm_provably_public(name, resolved):
@@ -868,6 +875,7 @@ def scan_projects(root, inv):
             proj["private_index"] = True
         if proj["private_index"]:
             private_dirs.add(rel)
+            inv.setdefault("private_dirs", []).append(rel)  # kept (as a list, for the saved inventory) so service venvs can be judged later
         if proj["lockfiles"] or proj["deploy"] or proj["packages"]:
             for venv in (".venv", "venv"):
                 v = venv_python_version(os.path.join(dirpath, venv))
@@ -993,7 +1001,6 @@ def tool_feed(t):
 
 
 def scan_tools(root, inv):
-    home = home_dir()
     seen = set()
     for name in TOOL_NAMES:
         exe = outside_tool(name, root)
@@ -1006,8 +1013,7 @@ def scan_tools(root, inv):
             if ("pip", version) in seen:
                 continue  # pip3 and pip are usually one tool
             seen.add(("pip", version))
-        shown = ("~" + exe[len(home):]) if home and exe.startswith(home.rstrip(os.sep) + os.sep) else exe
-        inv["tools"].append({"name": name, "version": version, "path": shown})
+        inv["tools"].append({"name": name, "version": version, "path": tilde(exe)})
     uv = outside_tool("uv", root)
     if not uv:
         return
@@ -1064,6 +1070,703 @@ def tool_skip_notes(inv):
         if x["name"] == "yarn" and x["version"] and not tool_feed(x):
             out.append("yarn %s (Berry) is not the npm package yarn (not checked)" % x["version"])
     return out
+
+
+# ---------------------------------------------------------------- services on this computer (launchd, systemd, cron, scheduled tasks)
+
+SERVICE_CAP = 300
+LINUX_DIRS = ("/usr/lib", "/lib", "/usr/local/sbin", "/snap")
+GO_FEEDS = {"cloudflared": "github.com/cloudflare/cloudflared", "ollama": "github.com/ollama/ollama"}
+REACH_TEXT = {"local": "this computer only", "network": "may be reachable from the local network",
+              "tunnel": "reachable from the internet through a tunnel"}
+WINDOWS_DIRS = (r"C:\Windows", r"C:\Program Files", r"C:\Program Files (x86)")
+LAUNCHD_SYSTEM_DIRS = ("/Library/LaunchAgents", "/Library/LaunchDaemons")  # tests replace this seam
+BREW_TIED = ("/opt/homebrew/opt/", "/opt/homebrew/Cellar/", "/usr/local/opt/", "/usr/local/Cellar/")
+BREW_DIRS = ("/opt/homebrew", "/usr/local/Cellar", "/usr/local/opt", "/usr/local/bin")
+APP_DIRS = ("/Applications",)
+SERVICE_VENV_CAP = 400
+DIST_ANY = re.compile(r"^(.+?)-(\d[^-]*)\.dist-info$")
+FLAG_TEXT = {
+    "tunnel": "reachable from the internet through a tunnel (a tunnel points here)",
+    "network": "may be reachable from the local network",
+    "tamper": "can be changed by someone else",
+    "unrecognised": "unrecognised \u2014 have a look",
+    "broken": "broken: its Python was removed or moved (Homebrew upgrade?)",
+    "missing": "program missing",
+    "failing": "failing",
+    "tied": "tied to a Homebrew/venv path: a macOS or Homebrew upgrade can break it",
+}
+APPLE_DIRS = ("/usr/bin", "/bin", "/sbin", "/usr/sbin", "/usr/libexec", "/System", "/Library/Apple")
+
+
+def tilde(path):
+    """A home path shows as ~/..., so reports never carry the user's account name."""
+    home = home_dir()
+    return ("~" + path[len(home):]) if home and path.startswith(home.rstrip(os.sep) + os.sep) else path
+
+
+def under(path, base):
+    fold = (lambda x: x.lower()) if platform_name() in ("windows", "darwin") else (lambda x: x)
+    p, b = fold(os.path.normcase(os.path.abspath(path))), fold(os.path.normcase(os.path.abspath(base)))
+    return p == b or p.startswith(b.rstrip(os.sep) + os.sep)
+
+
+def clean_label(text):
+    return re.sub(r"[^\w.@+\- :/\\]", "?", str(text))[:100]
+
+
+def new_service(label, where, program, script=None, file=None, pids=(), status="unknown", exit_code=None):
+    return {"label": clean_label(label), "where": where, "program": program, "script": script, "file": file,
+            "pids": list(pids), "status": status, "exit": exit_code}
+
+
+def existing_file(path):
+    return path if path and os.path.isfile(path) else None
+
+
+def launchd_list(root, notes):
+    """{label: (pid or None, last exit text)} from `launchctl list`, or None when it could not be read."""
+    code, out = run_system_tool(["launchctl", "list"], root, timeout=10)
+    if code != 0:
+        notes.append("launchctl list could not be run, so whether each service is running is unknown (not checked)")
+        return None
+    rows = {}
+    for line in out.splitlines()[1:]:
+        parts = line.split("\t")
+        if len(parts) >= 3:
+            rows[parts[2].strip()] = (int(parts[0]) if parts[0].strip().isdigit() else None, parts[1].strip())
+    return rows
+
+
+def read_launchd_plist(path):
+    """(label, program, script, tunnel ports, relative-config-unresolved) from one plist. Only Label, Program,
+    ProgramArguments and WorkingDirectory are looked at; every other key
+    (EnvironmentVariables, Sockets ...) stays unread. The script is argument 1 only when it is an existing file."""
+    try:
+        with open(path, "rb") as fh:
+            data = plistlib.load(fh)
+    except Exception:  # a malformed or unreadable plist is skipped, never fatal
+        return None
+    if not isinstance(data, dict):
+        return None
+    args = data.get("ProgramArguments")
+    args = [a for a in args if isinstance(a, str)] if isinstance(args, list) else []
+    prog = data.get("Program") if isinstance(data.get("Program"), str) else (args[0] if args else None)
+    script = existing_file(os.path.expanduser(args[1])) if len(args) > 1 and args[1][:1] in ("/", "~") else None
+    label = data.get("Label") if isinstance(data.get("Label"), str) else os.path.splitext(os.path.basename(path))[0]
+    workdir = data.get("WorkingDirectory") if isinstance(data.get("WorkingDirectory"), str) else None
+    unresolved = []
+    tports = cloudflared_arg_ports(prog, args, workdir, unresolved)
+    return label, prog, script, tports, bool(unresolved)
+
+
+def launchd_services(root, notes):
+    dirs = [(os.path.join(home_dir(), "Library", "LaunchAgents"), "user")] + [(d, "system-wide") for d in LAUNCHD_SYSTEM_DIRS]
+    listed = None
+    found = []
+    for d, where in dirs:
+        try:
+            names = sorted(n for n in os.listdir(d) if n.endswith(".plist"))
+        except OSError:
+            continue
+        for n in names:
+            got = read_launchd_plist(os.path.join(d, n))
+            if got:
+                found.append((got, where, os.path.join(d, n), d.endswith("LaunchDaemons")))
+    if found:
+        listed = launchd_list(root, notes)
+    out = []
+    for (label, prog, script, tports, rel), where, plist, daemon in found[:SERVICE_CAP]:
+        s = new_service(label, where, prog, script, plist)
+        s["tunnel_ports"] = tports
+        if rel:
+            notes.append("not checked: %s tunnel config path is relative" % s["label"])
+        if listed is not None and label in listed:
+            pid, last = listed[label]
+            s["pids"] = [pid] if pid else []
+            s["exit"] = last if last not in ("0", "-") else None
+            s["status"] = "running" if pid else "failing" if s["exit"] else "loaded"
+        elif listed is not None:
+            s["status"] = "not visible from here" if daemon else "not loaded"
+        out.append(s)
+    if len(found) > SERVICE_CAP:
+        notes.append("only the first %d launchd services were looked at (not checked: %d more)" % (SERVICE_CAP, len(found) - SERVICE_CAP))
+    return out
+
+
+def systemd_unescape(word):
+    """Decode the C-style escapes `systemctl show` writes into ExecStart words (`\\x20` for a space, `\\\\` for a backslash)."""
+    return re.sub(r"\\(x[0-9a-fA-F]{2}|\\)", lambda m: "\\" if m.group(1) == "\\" else chr(int(m.group(1)[1:], 16)), word)
+
+
+def systemd_services(root, notes):
+    code, out = run_system_tool(["systemctl", "--user", "list-units", "--type=service", "--all", "--no-pager", "--plain"], root, timeout=10)
+    if code != 0:
+        notes.append("systemctl could not be run, so user services were not listed (not checked)")
+        return []
+    units = []
+    for line in out.splitlines():
+        parts = line.replace("\u25cf", " ").split()
+        if len(parts) >= 2 and parts[0].endswith(".service") and parts[1] == "loaded":
+            units.append(parts[0])
+    out_list = []
+    for i in range(0, min(len(units), SERVICE_CAP), 50):
+        chunk = units[i:i + 50]
+        code, text = run_system_tool(["systemctl", "--user", "show", "-p", "Id,FragmentPath,MainPID,ExecStart,ActiveState,Result,WorkingDirectory"] + chunk,
+                                     root, timeout=15)
+        if code != 0:
+            notes.append("systemctl show failed for some user services (not checked)")
+            continue
+        for block in text.split("\n\n"):
+            props = dict(ln.split("=", 1) for ln in block.splitlines() if "=" in ln)
+            exec_start = props.get("ExecStart", "")
+            m = re.search(r"path=(\S+)", exec_start)
+            if not props.get("Id") or not m:
+                continue
+            argv = re.search(r"argv\[\]=(.*?) ;", exec_start)
+            words = [systemd_unescape(w) for w in argv.group(1).split()] if argv else []
+            script = existing_file(words[1]) if len(words) > 1 and words[1][:1] == "/" else None
+            active, result = props.get("ActiveState", ""), props.get("Result", "")
+            bad = active == "failed" or (result not in ("", "success") and active != "active")
+            pid = int(props["MainPID"]) if props.get("MainPID", "0").isdigit() and props["MainPID"] != "0" else None
+            svc = new_service(props["Id"], "systemd user", m.group(1), script, props.get("FragmentPath") or None,
+                              [pid] if pid else [], "running" if active == "active" else "failing" if bad else "loaded",
+                              result if bad else None)
+            unresolved = []
+            svc["tunnel_ports"] = cloudflared_arg_ports(m.group(1), words, props.get("WorkingDirectory") or None, unresolved)
+            if unresolved:
+                notes.append("not checked: %s tunnel config path is relative" % svc["label"])
+            out_list.append(svc)
+    return out_list
+
+
+ASSIGNMENT_WORD = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+
+def drop_leading_assignments(words):
+    """Drop leading NAME=value words and the `env` launcher with its options and assignments, so a value set inline never reaches a label or program."""
+    i = 0
+    while i < len(words):
+        w = words[i]
+        if ASSIGNMENT_WORD.match(w):
+            i += 1
+        elif re.split(r"[\\/]", w)[-1].lower() in ("env", "env.exe"):
+            i += 1
+            embedded = []  # `env -S 'A=1 prog x'` carries the command line itself: split it in place
+            while i < len(words) and (words[i].startswith("-") or ASSIGNMENT_WORD.match(words[i])):
+                opt = words[i]
+                if opt.startswith("--split-string="):
+                    embedded += split_embedded(opt.split("=", 1)[1])
+                    i += 1
+                elif opt in ("-S", "--split-string"):
+                    if i + 1 < len(words):
+                        embedded += split_embedded(words[i + 1])
+                    i += 2
+                elif opt.startswith("-S") and len(opt) > 2:
+                    embedded += split_embedded(opt[2:])
+                    i += 1
+                else:
+                    i += 2 if opt in ("-u", "-C", "-a", "--unset", "--chdir", "--argv0") else 1
+            return drop_leading_assignments(embedded + words[i:])
+        else:
+            break
+    return words[i:]
+
+
+def split_embedded(text):
+    try:
+        return shlex.split(text)
+    except ValueError:
+        return []
+
+
+def cron_services(root, notes):
+    code, out = run_system_tool(["crontab", "-l"], root, timeout=10)
+    if code != 0:
+        return []  # no crontab is the usual reason; nothing to say
+    found = []
+    for line in out.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or re.match(r"^\w+=", line):
+            continue
+        rest = line.split(None, 1)[1] if line.startswith("@") and " " in line else (line.split(None, 5)[5] if len(line.split(None, 5)) > 5 else "")
+        try:
+            words = shlex.split(rest)
+        except ValueError:
+            continue
+        words = drop_leading_assignments(words)
+        if words and "=" not in words[0]:
+            script = existing_file(words[1]) if len(words) > 1 and words[1][:1] in ("/", "~") and "=" not in words[1] else None
+            label = "cron: " + os.path.basename(words[0]) + (" " + os.path.basename(script) if script else "")
+            found.append(new_service(label, "cron", words[0], script, None, [], "scheduled"))
+    return found[:SERVICE_CAP]
+
+
+def split_windows_command(line):
+    """Split a Windows command line on spaces outside double quotes, dropping the quotes and keeping backslashes,
+    so --config="C:\\Program Files\\x.yml" stays one word. An unclosed quote runs to the end of the line."""
+    words, cur, quoted, started = [], [], False, False
+    for ch in line:
+        if ch == '"':
+            quoted, started = not quoted, True
+        elif ch.isspace() and not quoted:
+            if started:
+                words.append("".join(cur))
+            cur, started = [], False
+        else:
+            cur.append(ch)
+            started = True
+    if started:
+        words.append("".join(cur))
+    return words
+
+
+def task_services(root, notes):
+    code, out = run_system_tool(["schtasks", "/Query", "/FO", "CSV", "/V"], root, timeout=30)
+    if code != 0:
+        notes.append("schtasks could not be run, so scheduled tasks were not listed (not checked)")
+        return []
+    import csv
+    seen, found = set(), []
+    for row in csv.DictReader(out.splitlines()):
+        name = (row.get("TaskName") or "").strip()
+        run = (row.get("Task To Run") or "").strip()
+        if not name or name == "TaskName" or name in seen or name.lower().startswith("\\microsoft\\") or not run or run.upper() == "N/A":
+            continue
+        seen.add(name)
+        words = drop_leading_assignments(split_windows_command(run))
+        if not words or "=" in words[0]:
+            continue
+        script = existing_file(os.path.expandvars(words[1])) if len(words) > 1 and "=" not in words[1] else None
+        last = (row.get("Last Result") or "").strip()
+        bad = last not in ("", "0", "267009", "267011")
+        svc = new_service(name, "scheduled task", os.path.expandvars(words[0]), script, None, [],
+                          "failing" if bad else "scheduled", last if bad else None)
+        start_in = (row.get("Start In") or "").strip().strip('"')
+        unresolved = []
+        svc["tunnel_ports"] = cloudflared_arg_ports(words[0], [os.path.expandvars(w) for w in words],
+                                                    os.path.expandvars(start_in) if start_in.upper() != "N/A" else None, unresolved)
+        if unresolved:
+            notes.append("not checked: %s tunnel config path is relative" % svc["label"])
+        found.append(svc)
+    return found[:SERVICE_CAP]
+
+
+TUNNEL_URL_ARG = re.compile(r"https?://(?:localhost|127\.0\.0\.1|\[::1\]):(\d+)(?:/|$)")
+TUNNEL_PORT_LINE = re.compile(r"^\s*-?\s*(?:service|url):\s*https?://(?:localhost|127\.0\.0\.1|\[::1\]):(\d+)", re.M)
+
+
+def tunnel_config_ports(path):
+    """Ports named by `service:` / `url:` lines for localhost in one cloudflared config. Hostnames, tunnel ids and
+    credentials are never looked at; a .json file (the credentials) is never opened."""
+    if is_link(path) or path.lower().endswith(".json") or not os.path.isfile(path):
+        return set()
+    return {int(m.group(1)) for m in TUNNEL_PORT_LINE.finditer(read_text(path)[:1000000])}
+
+
+def cloudflared_arg_ports(prog, args, workdir=None, unresolved=None):
+    """Tunnel ports for a service whose program is cloudflared and whose arguments name its config
+    (`--config PATH` / `--config=PATH`, an existing file) or a local address (`tunnel --url http://localhost:PORT`).
+    A relative config path is joined to `workdir` when that is given; otherwise True is appended to `unresolved`."""
+    if not prog or os.path.basename(prog).lower() not in ("cloudflared", "cloudflared.exe"):
+        return set()
+    ports, i = set(), 1
+    while i < len(args):
+        a, kind, val = args[i], None, None
+        if a in ("--config", "--url") and i + 1 < len(args):
+            kind, val, i = a[2:], args[i + 1], i + 1
+        elif a.startswith("--config=") or a.startswith("--url="):
+            kind, val = a[2:].split("=", 1)[0], a.split("=", 1)[1]
+        if kind == "config" and val:
+            val = os.path.expanduser(val)
+            if not os.path.isabs(val):
+                if workdir and os.path.isabs(workdir):
+                    val = os.path.join(workdir, val)
+                elif unresolved is not None:
+                    unresolved.append(True)
+                    val = ""
+            ports |= tunnel_config_ports(val) if val else set()
+        elif kind == "url":
+            m = TUNNEL_URL_ARG.match(val)
+            if m:
+                ports.add(int(m.group(1)))
+        i += 1
+    return ports
+
+
+def tunnel_ports():
+    """Ports that a cloudflared config in ~/.cloudflared sends the internet to."""
+    ports = set()
+    d = os.path.join(home_dir(), ".cloudflared")
+    for pattern in ("*.yml", "*.yaml"):
+        for f in glob.glob(os.path.join(d, pattern)):
+            ports |= tunnel_config_ports(f)
+    return ports
+
+
+def split_host_port(addr):
+    host, _, port = addr.rpartition(":")
+    return (host.strip("[]"), int(port)) if port.isdigit() else (None, None)
+
+
+def parse_listeners(kind, out):
+    """[(host, port, pid or None, process name or None)] from lsof, ss or netstat output."""
+    rows = []
+    for line in out.splitlines():
+        p = line.split()
+        if kind == "lsof" and len(p) >= 9 and p[-1] == "(LISTEN)" and p[1].isdigit():
+            host, port = split_host_port(p[-2])
+            name, pid = p[0].replace("\\x20", " "), int(p[1])
+        elif kind == "ss" and len(p) >= 5 and p[0] == "LISTEN":
+            host, port = split_host_port(p[3])
+            m = re.search(r'\(\("([^"]*)",pid=(\d+)', line)
+            name, pid = (m.group(1), int(m.group(2))) if m else (None, None)
+        elif kind == "netstat" and len(p) >= 5 and p[0].upper() == "TCP" and p[3].upper() == "LISTENING":
+            host, port = split_host_port(p[1])
+            name, pid = None, int(p[4]) if p[4].isdigit() else None
+        else:
+            continue
+        if port:
+            rows.append((host, port, pid, name))
+    return rows
+
+
+def listening_ports(root, notes):
+    plat = platform_name()
+    if plat == "windows":
+        attempts = [("netstat", ["netstat", "-ano", "-p", "tcp"])]
+    else:
+        attempts = [("lsof", ["lsof", "-nP", "-iTCP", "-sTCP:LISTEN"])] + ([("ss", ["ss", "-ltnp"])] if plat == "linux" else [])
+    for kind, cmd in attempts:
+        code, out = run_system_tool(cmd, root, timeout=15)
+        if code == 127:
+            continue
+        if code not in (0, 1) and not out:
+            break  # the tool ran and failed
+        return parse_listeners(kind, out)  # lsof exits 1 with no output when nothing listens
+    notes.append("listening ports could not be read (not checked)")
+    return []
+
+
+def reach_of(host, port, tunnels):
+    if port in tunnels:
+        return "tunnel"
+    return "local" if host in ("127.0.0.1", "::1", "localhost") else "network"
+
+
+try:  # not on Windows
+    import grp
+    import pwd
+except ImportError:
+    grp = pwd = None
+
+
+def group_is_exclusive(gid):
+    """True only when every member of the group is root or the current user: its listed members plus every user whose
+    primary group it is. Any other account counts, system accounts too (one could replace the file we would run).
+    Any lookup failure means not exclusive."""
+    if grp is None or pwd is None:
+        return False
+    try:
+        names = set(grp.getgrgid(gid).gr_mem)
+        names |= {u.pw_name for u in pwd.getpwall() if u.pw_gid == gid}
+        for n in names:
+            u = pwd.getpwnam(n)
+            if u.pw_uid in (0, os.getuid()):
+                continue
+            return False
+        return True
+    except Exception:  # KeyError, OSError ...: cannot prove it, so flag
+        return False
+
+
+def changeable(path):
+    """True when someone other than the owner and root could rewrite this path or any folder above it: writable by
+    others (a sticky folder aside), or by a group that is not provably only root and the current user, or owned by
+    another user who is not root. POSIX only; on Windows only the location is judged."""
+    if not hasattr(os, "getuid"):
+        return False
+    me, cur, seen = os.getuid(), path, set()
+    while cur and cur not in seen:
+        seen.add(cur)
+        try:
+            st = os.stat(cur)
+        except OSError:
+            return False
+        sticky_dir = stat.S_ISDIR(st.st_mode) and bool(st.st_mode & stat.S_ISVTX)
+        other = bool(st.st_mode & stat.S_IWOTH) and not sticky_dir  # a sticky folder (like /tmp) lets nobody replace another's file
+        group = bool(st.st_mode & stat.S_IWGRP) and not sticky_dir and not group_is_exclusive(st.st_gid)
+        loose = other or group
+        if loose or st.st_uid not in (me, 0):
+            return True
+        cur = os.path.dirname(cur)
+    return False
+
+
+# Only these real locations (after links are resolved) hold programs stack-guard will run for a version.
+TRUSTED_RUN_DIRS = APPLE_DIRS + ("/opt/homebrew/Cellar", "/opt/homebrew/opt", "/usr/local/Cellar", "/usr/local/opt")
+
+
+def trusted_to_run(prog, kind):
+    """True only when running `prog --version` cannot run someone else's code: its real path (links resolved) is in an
+    Apple system folder or a Homebrew Cellar/opt folder, neither the link nor the real file nor any folder above is
+    changeable, and the real file is still named for the same runtime. POSIX only; elsewhere nothing is run.
+    Returns that real path (the caller runs exactly it, never the link, so a link swapped after this check runs
+    nothing new), or None."""
+    if not hasattr(os, "getuid") or platform_name() == "windows":
+        return None
+    real = os.path.realpath(prog)
+    if not any(under(real, b) for b in TRUSTED_RUN_DIRS):
+        return None
+    if service_runtime(os.path.basename(real)) != kind:
+        return None
+    return real if not changeable(prog) and not changeable(real) else None
+
+
+CELLAR_ROOTS = ("/opt/homebrew/Cellar", "/usr/local/Cellar")
+
+
+def version_without_running(prog, kind):
+    """Version read from <Homebrew Cellar>/<formula>/<version>/ for a program whose real path sits in a real Homebrew
+    Cellar, whose file name is still the known runtime, and whose formula belongs to that runtime. Else None. Nothing is run."""
+    real = os.path.realpath(prog).replace(os.sep, "/")
+    if service_runtime(os.path.basename(real)) != kind:
+        return None
+    for root in CELLAR_ROOTS:
+        m = re.match(re.escape(root) + r"/([^/]+)/(\d+(?:\.\d+){1,2})(?=[_/]|$)", real)
+        if m:
+            formula = m.group(1).split("@")[0].lower()
+            ok = formula == kind or (kind == "postgres" and formula == "postgresql")
+            return m.group(2) if ok else None
+    return None
+
+
+def recognised_place(prog, root):
+    plat = platform_name()
+    bases = [root] + list(WINDOWS_DIRS if plat == "windows" else APPLE_DIRS + BREW_DIRS + APP_DIRS + (LINUX_DIRS if plat == "linux" else ()))
+    return any(under(prog, b) for b in bases)
+
+
+def service_runtime(base):
+    b = base.lower()
+    b = b[:-4] if b.endswith(".exe") else b
+    if re.fullmatch(r"python(\d+(\.\d+)*)?", b):
+        return "python"
+    if b == "node":
+        return "node"
+    if b in ("postgres", "postgresql") or b.startswith("postgresql@"):
+        return "postgres"
+    return b if b in GO_FEEDS else None
+
+
+def venv_packages(vdir):
+    """(name, version) of every package installed in a virtualenv, read from its dist-info folders. Nothing is run."""
+    found = {}
+    for sp in glob.glob(os.path.join(vdir, "lib", "python*", "site-packages")) + [os.path.join(vdir, "Lib", "site-packages")]:
+        try:
+            names = os.listdir(sp)
+        except OSError:
+            continue
+        for n in names:
+            m = DIST_ANY.match(n)
+            if m and not os.path.exists(os.path.join(sp, n, "direct_url.json")):  # a URL, git or path install may be a private name
+                found[norm_py(m.group(1))] = m.group(2)
+    return sorted(found.items())[:SERVICE_VENV_CAP]
+
+
+def venv_names_may_be_public(vdir, root, inv):
+    """True only when this virtualenv's package names may be sent out: the venv has no pip.conf/pip.ini of its own, it sits inside
+    a listed project, no private index is set for that project, any folder from the venv up to the scanned root, or the whole
+    computer. Anything else is treated as private (fail closed)."""
+    if any(os.path.exists(os.path.join(vdir, n)) for n in ("pip.conf", "pip.ini")) or global_private_index():
+        return False
+    if not is_inside(vdir, root):
+        return False
+    containing = [p for p in inv.get("projects", []) if is_inside(vdir, os.path.join(root, p["path"]))]
+    if not containing or any(p.get("private_index") for p in containing):
+        return False
+    private_dirs = set(inv.get("private_dirs", []))
+    rel = os.path.relpath(vdir, root)
+    return not any(d in private_dirs for d in ancestors(rel) + [rel])
+
+
+def check_service(s, root, inv):
+    """Fill s["flags"] and s["feed"]. Reads files and runs `<program> --version` only for a known runtime in a trusted install (see trusted_to_run)."""
+    flags, prog = [], s.pop("program")
+    script, plist = s.pop("script"), s.pop("file")
+    s["feed"] = False
+    shown_prog = safe_path(tilde(prog)) if prog else None
+    if prog and not os.path.isabs(prog):
+        prog = which(prog) or prog
+    exists = bool(prog) and os.path.isabs(prog) and os.path.exists(prog)
+    if prog and os.path.isabs(prog) and not exists:
+        flags.append("missing")
+    if exists:
+        if any(changeable(p) for p in (plist, prog, script) if p):
+            flags.append("tamper")
+        if not recognised_place(prog, root):
+            flags.append("unrecognised")
+        if any(prog.startswith(b) for b in BREW_TIED):
+            flags.append("tied")
+        vdir = os.path.dirname(os.path.dirname(prog))
+        cfg = os.path.join(vdir, "pyvenv.cfg")
+        if os.path.isfile(cfg) and not is_link(cfg):
+            if "tied" not in flags:
+                flags.append("tied")
+            home = re.search(r"^\s*home\s*=\s*(.+?)\s*$", read_text(cfg), re.M)
+            if home and not os.path.isdir(home.group(1)):
+                flags.append("broken")
+            private_py_all = {n for proj in inv.get("projects", []) for n in proj.get("private_py", [])}
+            if venv_names_may_be_public(vdir, root, inv):
+                pkgs = [(n, v) for n, v in venv_packages(vdir) if valid_name("PyPI", n) and valid_version(v) and norm_py(n) not in private_py_all]
+            else:  # fail closed: names go online only for a venv inside a listed project with no private index anywhere above it
+                pkgs = []
+                count = len([1 for n, v in venv_packages(vdir) if valid_name("PyPI", n) and valid_version(v)])
+                if count:
+                    inv.setdefault("service_notes", []).append(
+                        "service %s: %d venv packages not looked up (outside the scanned folder; scan that folder to check them)" % (s["label"], count))
+            for n, v in pkgs:
+                inv["service_targets"].append({"ecosystem": "PyPI", "name": n, "version": v, "project": "service %s (venv)" % s["label"],
+                                               "dev": False, "deploy": False, "tool": True, "service": True})
+            s["feed"] = s["feed"] or bool(pkgs)
+        kind = service_runtime(os.path.basename(prog))
+        if kind:
+            version = None
+            vdir = os.path.dirname(os.path.dirname(prog))
+            trusted = trusted_to_run(prog, kind)
+            # pyvenv.cfg is only believed when the program is trusted, or sits in a recognised place and is not changeable
+            cfg_ok = trusted or ("tamper" not in flags and "unrecognised" not in flags)
+            if is_inside(prog, root):  # nothing inside the scanned folder is ever run
+                version = venv_python_version(vdir) if kind == "python" and cfg_ok else None
+            else:
+                # a path-derived version is believed only when neither the link nor the real file is changeable
+                loose = "tamper" in flags or changeable(os.path.realpath(prog))
+                version = None if loose else version_without_running(prog, kind)
+                if not version and kind == "python" and cfg_ok:
+                    version = venv_python_version(vdir)
+                if not version and trusted:
+                    code, out = run_cmd([trusted, "--version"], timeout=5)  # the checked real file, not the link
+                    version = first_version(out) if code == 0 else None
+                elif not version:
+                    inv["service_untrusted"].append(s["label"])
+            if version and kind in GO_FEEDS and valid_version(version):
+                inv["service_targets"].append({"ecosystem": "Go", "name": GO_FEEDS[kind], "version": version, "project": "service: %s" % s["label"],
+                                               "dev": False, "deploy": False, "tool": True, "service": True})
+            elif version and kind in EOL_PRODUCTS:
+                inv["runtimes"].append({"name": kind, "version": version, "source": "service %s" % s["label"], "exact": True})
+            s["feed"] = s["feed"] or bool(version)
+            if not version:
+                inv["service_unread"].append(s["label"])
+    if s["status"] == "failing" and "failing" not in flags:
+        flags.append("failing")
+    s["flags"] = flags
+    s["program"] = shown_prog or "(none)"
+    s["script"] = safe_path(tilde(script)) if script else None
+
+
+def scan_services(root, inv):
+    """Fill inv["services"] and inv["ports"]. Names and paths only: a service's arguments (which can carry tokens) and its
+    environment are never read, and the only program ever run is a known runtime in a trusted install, asked for its version."""
+    inv.update({"services": [], "ports": [], "service_targets": [], "service_notes": [], "service_unread": [], "service_untrusted": []})
+    notes, plat = inv["service_notes"], platform_name()
+    try:
+        if plat == "darwin":
+            raw = launchd_services(root, notes)
+        elif plat == "linux":
+            raw = systemd_services(root, notes) + cron_services(root, notes)
+        else:
+            raw = task_services(root, notes)
+        listeners = listening_ports(root, notes)
+    except Exception as e:  # a surprise in one source must not stop the check
+        notes.append("services could not be listed: %s (not checked)" % err_name(e))
+        return
+    tunnels = tunnel_ports().union(*[s.get("tunnel_ports") or set() for s in raw])
+    by_pid = {pid: s for s in raw for pid in s["pids"]}
+    seen = set()
+    for host, port, pid, name in listeners:
+        reach = reach_of(host, port, tunnels)
+        svc = by_pid.get(pid)
+        if (port, pid, reach) in seen:
+            continue
+        seen.add((port, pid, reach))
+        inv["ports"].append({"port": port, "who": svc["label"] if svc else clean_label(name or "unknown"), "reach": reach})
+        rank = ("local", "network", "tunnel")
+        if svc and (svc.get("reach") is None or rank.index(reach) > rank.index(svc["reach"])):
+            svc["reach"] = reach  # the widest reach of any port the service listens on
+    inv["ports"].sort(key=lambda x: x["port"])
+    for s in raw:
+        reach = s.get("reach")
+        check_service(s, root, inv)
+        if reach in ("network", "tunnel"):
+            s["flags"].insert(0, reach)
+        s["reach"] = reach
+        s.pop("pids", None)
+        s.pop("tunnel_ports", None)
+        inv["services"].append(s)
+    nofeed = sorted({s["label"] for s in inv["services"] if not s["feed"]})
+    if nofeed:
+        notes.append("Services with no advisory feed (not checked): %s" % ", ".join(nofeed))
+    if inv["service_unread"]:
+        notes.append("Services whose version could not be read (not checked): %s" % ", ".join(sorted(set(inv["service_unread"]))))
+    if inv["service_untrusted"]:
+        notes.append("Version not read (not a trusted install, so the program was not run): %s" % ", ".join(sorted(set(inv["service_untrusted"]))))
+
+
+def service_key(s):
+    return "%s|%s" % (s["label"], s["program"])
+
+
+def service_line(s):
+    parts = [FLAG_TEXT[f] + (" (last exit %s)" % s["exit"] if f == "failing" and s.get("exit") else "") for f in s["flags"] if f in FLAG_TEXT]
+    runs = s["program"] + (" " + s["script"] if s.get("script") else "")
+    return "`%s` runs `%s`" % (s["label"], runs) + (": " + "; ".join(parts) if parts else "")
+
+
+def service_rank(s, hole):
+    """0 tunnel, 1 network with a hole, 2 tamper, 3 unrecognised, 4 broken or missing, 5 failing, else None (not listed)."""
+    f = s["flags"]
+    for rank, hit in enumerate(("tunnel" in f, "network" in f and hole, "tamper" in f, "unrecognised" in f,
+                                "broken" in f or "missing" in f, "failing" in f)):
+        if hit:
+            return rank
+    return None
+
+
+def service_holes(rep):
+    """Labels of services that have a known problem in their program or packages."""
+    labels = {s["label"] for s in rep.get("services", [])}
+    out = set()
+    for f in rep.get("findings", []):
+        m = re.fullmatch(r"service: (.+)|service (.+) \(venv\)", f["project"])
+        if m and (m.group(1) or m.group(2)) in labels:
+            out.add(m.group(1) or m.group(2))
+    return out
+
+
+def services_section(rep):
+    """Report lines for the Services section: ordered, tunnel-reachable ones left to the top block."""
+    holes = service_holes(rep)
+    ranked = sorted(((service_rank(s, s["label"] in holes), s) for s in rep.get("services", [])), key=lambda x: (x[0] is None, x[0], x[1]["label"]))
+    return ["- " + service_line(s) for r, s in ranked if r not in (None, 0)]
+
+
+def inventory_service_lines(inv):
+    clean = lambda x: str(x).replace("|", "/")
+    L = ["", "## Services on this computer", "", "Names and paths only: never a service's arguments or settings.", ""]
+    if inv.get("services"):
+        L += ["| Service | Runs | Status | Flags |", "|---|---|---|---|"]
+        for s in inv["services"]:
+            flags = "; ".join(FLAG_TEXT[f] + (" (last exit %s)" % s["exit"] if f == "failing" and s.get("exit") else "") for f in s["flags"] if f in FLAG_TEXT)
+            L.append("| `%s` | `%s` | %s | %s |" % (clean(s["label"]), clean(s["program"] + (" " + s["script"] if s.get("script") else "")), s["status"], clean(flags) or "none"))
+    else:
+        L.append("None found.")
+    L += ["", "## Listening ports", ""]
+    if inv.get("ports"):
+        L += ["| Port | Who | Reach |", "|---|---|---|"]
+        L += ["| %d | `%s` | %s |" % (p["port"], clean(p["who"]), REACH_TEXT[p["reach"]]) for p in inv["ports"]]
+    else:
+        L.append("None found.")
+    return L
 
 
 # ---------------------------------------------------------------- committed secrets
@@ -1348,6 +2051,7 @@ def build_inventory(folder):
     scan_projects(root, inv)
     scan_mcp(root, inv)
     scan_tools(root, inv)
+    scan_services(root, inv)
     py_name = "python" if platform_name() == "windows" else "python3"
     for name, exe in (("node", outside_tool("node", root)), ("python", outside_tool(py_name, root))):
         code, out = run_cmd([exe, "--version"]) if exe else (127, "")
@@ -1434,6 +2138,7 @@ def render_inventory(inv):
         L.append("- uv tool environment `%s`: certifi %s, pip %s" % (e["tool"], e["certifi"] or "not installed", e["pip"] or "not installed"))
     if not inv.get("tools"):
         L.append("None found.")
+    L += inventory_service_lines(inv)
     L += ["", "## Runtimes", ""]
     for r in inv["runtimes"]:
         L.append("- %s %s (%s)" % (r["name"], r["version"] or "not found", r["source"]))
@@ -1444,6 +2149,7 @@ def render_inventory(inv):
     skipped += ["`%s`: could not be read" % u for u in inv["unreadable"]]
     skipped += ["folder deeper than %d levels: `%s` (%s)" % (MAX_DEPTH, d, DEEPER_HOW) for d in inv.get("too_deep", [])]
     skipped += [OUTSIDE_NOTE % o for o in inv.get("outside", [])]
+    skipped += inv.get("service_notes", [])
     if skipped:
         L += ["", "## Not parsed or unreadable", ""] + ["- " + s for s in skipped]
     return "\n".join(L) + "\n"
@@ -1592,7 +2298,7 @@ def collect_targets(inv, stats=None):
                 continue
             t.append({"ecosystem": k["ecosystem"], "name": k["name"], "version": k["version"].lstrip("v"),
                       "project": "MCP server %s" % m["name"], "dev": False, "deploy": False})
-    for x in tool_targets(inv):
+    for x in tool_targets(inv) + list(inv.get("service_targets", [])):
         if x["ecosystem"] == "PyPI" and computer_index:
             private_seen.add(norm_py(x["name"]))
             by_computer += 1
@@ -1655,7 +2361,7 @@ def osv_check(targets, cache_dir, errors):
                 "id": vid, "summary": str(v.get("summary") or "no summary available")[:200],
                 "severity": vuln_severity(v, vid), "fixed": fixed_versions(v, t["ecosystem"], t["name"]),
                 "package": t["name"], "version": t["version"], "ecosystem": t["ecosystem"],
-                "project": t["project"], "dev": t["dev"], "deploy": t["deploy"], "tool": bool(t.get("tool"))})
+                "project": t["project"], "dev": t["dev"], "deploy": t["deploy"], "tool": bool(t.get("tool")), "service": bool(t.get("service"))})
     return findings
 
 
@@ -1674,7 +2380,7 @@ def eol_check(runtimes, errors):
                 errors.append("endoflife.date (%s support dates) could not be reached: %s." % (prod, err_name(e)))
         cycles = cycles_by_product[prod]
         parts = r["version"].split(".")
-        cycle = parts[0] if r["name"] == "node" else ".".join(parts[:2])
+        cycle = parts[0] if r["name"] in ("node", "postgres") else ".".join(parts[:2])
         row = next((c for c in cycles or [] if str(c.get("cycle")) == cycle), None)
         if not row:
             continue
@@ -1711,7 +2417,9 @@ def make_report(inv, findings, errors, osv_ok, skipped=None):
             "runtimes": [r for r in inv["runtimes"] if r["version"]],
             "mcp": [dict(m, news_proof=mcp_news_proof(m, lockfile_public_npm(inv))) for m in inv["mcp"]],
             "tools": inv.get("tools", []), "tool_envs": inv.get("tool_envs", []),
-            "counts": counts, "not_checked": errors + unreadable + not_parsed + skip_notes(skipped) + tool_skip_notes(inv), "agent_notes": []}
+            "services": inv.get("services", []), "ports": inv.get("ports", []),
+            "counts": counts, "not_checked": errors + unreadable + not_parsed + skip_notes(skipped) + tool_skip_notes(inv) + inv.get("service_notes", []),
+            "agent_notes": []}
 
 
 def read_json_file(path):
@@ -1739,7 +2447,7 @@ def finding_text(f):
 
 
 def diff_reports(prev, cur, prev_problem=None):
-    d = {"first": prev is None, "notes": [], "new": [], "fixed": [], "runtimes": [], "mcp": []}
+    d = {"first": prev is None, "notes": [], "new": [], "fixed": [], "runtimes": [], "mcp": [], "services": []}
     if prev_problem:
         d["notes"].append(prev_problem)
     if prev is None:
@@ -1758,6 +2466,12 @@ def diff_reports(prev, cur, prev_problem=None):
     old_rt = {rt(r) for r in prev.get("runtimes", []) if r.get("status") == "unsupported"}
     d["runtimes"] = [{"text": "%s %s is no longer supported%s" % (r["name"], r["version"], " (ended %s)" % r["eol"] if r.get("eol") else ""),
                       "where": r["source"]} for r in cur["runtimes"] if r.get("status") == "unsupported" and rt(r) not in old_rt]
+    if "services" in prev:  # an older report never recorded them, so the first run only starts the list
+        old_svc = {service_key(s) for s in prev["services"]}
+        d["services"] = [{"text": "%s (%s)" % (service_line(s), s["where"]), "where": s["where"]} for s in cur.get("services", [])
+                         if service_key(s) not in old_svc]
+    else:
+        d["notes"].append("Background services were not recorded in the previous report, so this check starts their list.")
     old_mcp = {"%s|%s" % (m["source"], m["name"]) for m in prev.get("mcp", []) if m.get("unpinned")}
     d["mcp"] = [{"text": "MCP server '%s' auto-updates on every start" % m["name"], "where": m["source"]}
                 for m in cur["mcp"] if m.get("unpinned") and "%s|%s" % (m["source"], m["name"]) not in old_mcp]
@@ -1772,7 +2486,8 @@ def diff_lines(d, with_where):
     else:
         out = []
         for title, key in (("New problems", "new"), ("Fixed since last time", "fixed"),
-                           ("Runtimes no longer supported", "runtimes"), ("New auto-updating MCP servers", "mcp")):
+                           ("Runtimes no longer supported", "runtimes"), ("New auto-updating MCP servers", "mcp"),
+                           ("New background services since last check", "services")):
             if d[key]:
                 out += ["%s:" % title] + [line(x) for x in d[key]]
         if not out:
@@ -1801,7 +2516,9 @@ def render_report(rep, diff):
     red = [f for f in others if f["severity"] in HIGH_SEVS and f["deploy"] and not f["dev"]]
     red_keys = {f["key"] for f in red}
     rest = [f for f in others if f["key"] not in red_keys and not f.get("tool")]
-    tool_findings = [f for f in others if f.get("tool")]
+    tool_findings = [f for f in others if f.get("tool") and not f.get("service")]
+    service_findings = [f for f in others if f.get("service")]
+    tunnel = [s for s in rep.get("services", []) if "tunnel" in s["flags"]]
     L = ["# Stack Guard check, %s" % rep["date"], ""]
     if rep.get("update"):
         L += [rep["update"], ""]
@@ -1809,6 +2526,10 @@ def render_report(rep, diff):
         L += ["## Known malicious releases", "",
               "Remove or replace these versions now, and rotate the keys this computer held if one of them ever ran.", ""]
         L += group_findings(bad) + [""]
+    if tunnel:
+        L += ["## \U0001F534 Reachable from the internet through a tunnel", "",
+              "A tunnel config on this computer sends the internet to these. Check they are meant to be public and up to date.", ""]
+        L += ["- " + service_line(s) for s in tunnel] + [""]
     L += ["Folder: `%s`" % rep["folder"], "", "## New since last check", ""]
     L += diff_lines(diff, True)
     L += ["", "## 🔴 Fix first", "", "High or critical problems in live packages of a project that has a deploy config.", ""]
@@ -1817,6 +2538,10 @@ def render_report(rep, diff):
     L += committed_lines({"findings": rep.get("committed_secrets") or []}) or ["None found in the usual secret files."]
     L += ["- " + n for n in rep.get("committed_notes", [])]
     L += ["", "## 🟠 Also worth fixing", ""] + (group_findings(rest) or ["None."])
+    L += ["", "## \U0001F7E0 Services", "",
+          "Background services on this computer (launchd, systemd, cron, scheduled tasks), most exposed first."]
+    svc_lines = services_section(rep) + ([""] if services_section(rep) and service_findings else []) + group_findings(service_findings)
+    L += [""] + (svc_lines or ["None need a look." if rep.get("services") else "None found."])
     L += ["", "## Tools on this computer", ""]
     for t in rep.get("tools", []):
         L.append("- %s %s (%s)" % (t["name"], t["version"] or "version not found", t["path"]))
@@ -1865,6 +2590,8 @@ def notify_text(rep, diff, prev=None, hidden=frozenset()):
     n_cs = len(rep.get("committed_secrets") or [])
     if n_cs:
         head += "; %d secret file(s) committed to git" % n_cs
+    if diff.get("services"):
+        head += "; %d new background service(s) (names stay on this computer)" % len(diff["services"])
     if rep["not_checked"]:
         head += "; some things were not checked"
     new_keys = {x["key"] for x in diff["new"] if x.get("key")}
@@ -2159,6 +2886,11 @@ def cmd_check(folder, notify, agents=False):
         print("Known malicious releases: %d (shown first in the report; remove or replace them now)." % n_bad)
     if n_cs:
         print("Secret files committed to git: %d (see the report; rotate those keys first)." % n_cs)
+    n_svc = len(rep.get("services", []))
+    if n_svc:
+        holes = service_holes(rep)
+        print("Background services: %d found, %d need a look (see the report)." % (
+            n_svc, sum(1 for s in rep["services"] if service_rank(s, s["label"] in holes) is not None)))
     print("Report: %s/reports/%s.md" % (STATE_DIR, rep["date"]))
     if rep.get("update"):
         print(rep["update"])
@@ -2258,6 +2990,201 @@ def cmd_release_age(eco, name, version, folder, min_hours_flag):
                              may_look_up=ok_input and may_look_up_name(eco_n, name, folder))
     print(line)
     return code
+
+
+# ---------------------------------------------------------------- lock-check (every changed lockfile version: age + malware)
+
+PLAIN_PIN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.\-]*==[A-Za-z0-9_.!+\-]+")
+
+
+def requirements_are_plain(path):
+    """True when every line is blank, a comment, or a plain name==version (a marker after ';', --hash options and
+    backslash continuations are allowed). Any other line (-r, -i, a URL, a range, an editable path) means the file is not read."""
+    logical, cur = [], ""
+    for line in read_text(path).splitlines():
+        cur += line.rstrip("\\") + (" " if line.endswith("\\") else "")
+        if not line.endswith("\\"):
+            logical.append(cur)
+            cur = ""
+    if cur:
+        logical.append(cur)
+    for line in logical:
+        line = re.sub(r"(^|\s)#.*$", "", line)
+        line = re.sub(r"\s--hash[= ]\S+", "", line).split(";", 1)[0].strip()
+        if line and not PLAIN_PIN.fullmatch(line):
+            return False
+    return True
+
+
+def npm_tarball_matches(name, version, resolved):
+    """A registry tarball must be named for the package it is filed under: <name>/-/<basename>-<version>.tgz."""
+    for host in ("https://registry.npmjs.org/", "https://registry.yarnpkg.com/"):
+        if resolved.startswith(host):
+            path = urllib.parse.unquote(resolved[len(host):].split("?", 1)[0].split("#", 1)[0])
+            return path == "%s/-/%s-%s.tgz" % (name, name.rsplit("/", 1)[-1], version)
+    return True  # not a registry tarball: other sources already count as private
+
+
+class LockSourceError(Exception):
+    """A lockfile's sources could not be read or its shape is not understood."""
+
+
+def lock_sources(path, kind):
+    """({(ecosystem, name, version): set of source tokens}, {keys not proven}). A source token is what the lockfile says the
+    package was fetched from; a package whose token changes at the same version, or whose npm tarball does not match its name, is not proven."""
+    sources, unproven = {}, set()
+
+    def put(eco, name, version, token):
+        sources.setdefault((eco, name, version), set()).add(token)
+
+    try:
+        if kind == "package-lock.json":
+            with open(path, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            if not isinstance(data, dict) or not isinstance(data.get("packages") or {}, dict):
+                raise ValueError("malformed lockfile")
+            for key, entry in (data.get("packages") or {}).items():
+                if "node_modules/" not in key:
+                    continue
+                if not isinstance(entry, dict):
+                    raise ValueError("malformed lockfile")
+                if entry.get("link"):
+                    continue
+                if not entry.get("version"):
+                    raise ValueError("malformed lockfile")
+                name, version = npm_entry_name(key, entry), str(entry["version"])
+                resolved = str(entry.get("resolved") or "")
+                put("npm", name, version, "%s|%s" % (resolved, entry.get("integrity") or ""))
+                if not npm_tarball_matches(name, version, resolved):
+                    unproven.add(("npm", name, version))
+        elif kind in ("poetry.lock", "uv.lock") and tomllib is not None:
+            with open(path, "rb") as fh:
+                data = tomllib.load(fh)
+            for pk in data.get("package", []):
+                if pk.get("name") and pk.get("version"):
+                    put("PyPI", str(pk["name"]).lower(), str(pk["version"]), json.dumps(pk.get("source"), sort_keys=True, default=str))
+        elif kind == "Pipfile.lock":
+            with open(path, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            for section in ("default", "develop"):
+                for name, info in (data.get(section) or {}).items():
+                    if isinstance(info, dict) and info.get("version"):
+                        put("PyPI", name.lower(), str(info["version"]).lstrip("="),
+                            json.dumps({k: info.get(k) for k in ("index", "git", "ref", "path", "file")}, sort_keys=True, default=str))
+    except (OSError, ValueError, AttributeError, TypeError) as e:
+        raise LockSourceError(err_name(e))  # a lockfile whose sources cannot be read proves nothing: lock-check exits 2
+    return sources, unproven
+
+
+def parse_lock_file(path, kind):
+    """(project dict, error text). kind is the lockfile's published name, so a backup copy with another name parses the same way."""
+    proj, inv = new_project("."), {"unreadable": []}
+    if not os.path.isfile(path):
+        return None, "not found"
+    if re.fullmatch(r"requirements.*\.txt", kind) and not requirements_are_plain(path):
+        return None, "could not be read"
+    if kind == "package-lock.json":
+        parse_npm_lock(path, kind, proj, inv)
+    elif kind in ("poetry.lock", "uv.lock"):
+        parse_toml_lock(path, kind, proj)
+    elif kind == "Pipfile.lock":
+        parse_pipfile_lock(path, kind, proj, inv)
+    elif re.fullmatch(r"requirements.*\.txt", kind):
+        parse_requirements(path, kind, proj)
+    else:
+        return None, "this lockfile type is not understood"
+    if inv["unreadable"] or proj["not_parsed"]:
+        return None, "could not be read"
+    return proj, None
+
+
+def changed_versions(before, after):
+    """The (ecosystem, name, version) triples in `after` that `before` lacks: added or changed, never removed."""
+    old = {(p["ecosystem"], p["name"], p["version"]) for p in before["packages"]}
+    return sorted({(p["ecosystem"], p["name"], p["version"]) for p in after["packages"]} - old)
+
+
+def lock_may_look_up(eco, name, after, folder_projects, have_folder=True):
+    """Same privacy rule as the checks: a name leaves this computer only when it is provably public.
+    A Python name is never looked up without --folder: a lockfile alone cannot show where its packages come from."""
+    projects = [after] + folder_projects
+    if eco == "npm":
+        return npm_name_public(name) and name not in {n for p in projects for n in p["private_npm"]}
+    if not have_folder or global_private_index() or any(p.get("private_index") for p in projects):
+        return False
+    return norm_py(name) not in {n for p in projects for n in p.get("private_py", [])}
+
+
+UNREAD_LOCKS = ("pnpm-lock.yaml", "yarn.lock", "bun.lock", "bun.lockb")
+
+
+def cmd_lock_check(before_path, after_path, folder, min_hours_flag):
+    kind = os.path.basename(after_path)
+    if kind in UNREAD_LOCKS:
+        print("unknown: this lockfile type is not read yet: check each changed version with release-age")
+        return 2
+    before, why_b = parse_lock_file(before_path, kind)
+    after, why_a = parse_lock_file(after_path, kind)
+    for label, got, why in (("before", before, why_b), ("after", after, why_a)):
+        if got is None:
+            print("unknown: the %s lockfile %s, so nothing is proven" % (label, why))
+            return 2
+    changed = changed_versions(before, after)
+    try:
+        src_before, _ = lock_sources(before_path, kind)
+        src_after, unproven = lock_sources(after_path, kind)
+    except Exception as e:  # never pass on a lockfile whose sources could not be read
+        print("unknown: the lockfile sources could not be read (%s), so nothing is proven" % err_name(e))
+        return 2
+    # a package at the same version whose source differs from every source it had before: changed, and not proven
+    moved = sorted(k for k, tokens in src_after.items() if k in src_before and not tokens <= src_before[k])
+    if not changed and not moved:
+        print("No added or changed versions.")
+        return 0
+    folder_projects = build_inventory(folder)["projects"] if folder else []
+    hours, now = min_release_hours(min_hours_flag), datetime.datetime.now(datetime.timezone.utc)
+    private, public = 0, []
+    results = {}
+    moved_count = len(set(moved) - set(changed))
+    for eco, name, version in changed:
+        if (eco, name, version) in unproven:
+            continue  # counted below; its name is not looked up under a tarball that belongs to another name
+        if not (valid_name(eco, name) and valid_version(version)) or not lock_may_look_up(eco, name, after, folder_projects, bool(folder)):
+            private += 1
+            continue
+        public.append({"ecosystem": eco, "name": name, "version": version, "project": "lock-check", "dev": False, "deploy": False})
+        code, line = release_age(eco, name, version, http_json, now, hours)
+        results[(eco, name, version)] = [code, line, None]
+    errors, bad, found = [], {}, []
+    if public:
+        with tempfile.TemporaryDirectory() as cache:
+            found = osv_check(public, cache, errors)
+        for f in found or []:
+            if f["severity"] == "MALICIOUS":
+                bad.setdefault((f["ecosystem"], f["package"], f["version"]), []).append(f["id"])
+    for key, row in results.items():
+        if key in bad:
+            row[0], row[2] = 4, "MALICIOUS (%s)" % ", ".join(bad[key][:3])
+        elif found is None:
+            row[2] = "malware check not done"
+            row[0] = max(row[0], 2)
+        else:
+            row[2] = "no malware record"
+        print("%s; %s" % (row[1], row[2]))
+    if private:
+        print("unknown: %d private or unrecognised package(s) not looked up (not proven)" % private)
+    mismatched = len(unproven & set(changed))
+    if mismatched:
+        print("unknown: %d package(s) whose download address does not match their name (not proven)" % mismatched)
+    if moved_count:
+        print("unknown: %d package(s) changed where they come from at the same version (not proven)" % moved_count)
+    for e in errors:
+        print("unknown: " + e)
+    codes = [r[0] for r in results.values()] + ([2] if private or mismatched or moved_count or errors else [])
+    for c in (4, 3, 2):  # the worst wins: malicious, then too new, then not proven
+        if c in codes:
+            return c
+    return 0
 
 
 # ---------------------------------------------------------------- watch (daily schedule)
@@ -2702,6 +3629,11 @@ def main(argv=None):
     ra.add_argument("version")
     ra.add_argument("--min-hours", default=None)
     ra.add_argument("--folder", default=None, help="a project folder, so names marked private there are not looked up")
+    lc = sub.add_parser("lock-check", help="age + malware check of every version a lockfile gained (0 clean, 3 too new, 4 malicious, 2 not proven)")
+    lc.add_argument("before")
+    lc.add_argument("after")
+    lc.add_argument("--folder", default=None, help="a project folder, so names marked private there are not looked up")
+    lc.add_argument("--min-hours", default=None)
     c = sub.add_parser("check")
     c.add_argument("folder", nargs="?", default=".")
     c.add_argument("--notify", action="store_true")
@@ -2719,6 +3651,9 @@ def main(argv=None):
     r.add_argument("folder", nargs="?", default=".")
     r.add_argument("--all", action="store_true", help="remove every stack-guard schedule on this computer")
     a = ap.parse_args(argv)
+    if a.cmd == "lock-check" and a.folder and not os.path.isdir(a.folder):
+        print("Folder not found: %s" % a.folder)
+        return 2
     if a.cmd in ("inventory", "check", "watch-install", "webhook-set", "webhook-remove") and not os.path.isdir(a.folder):
         print("Folder not found: %s" % a.folder)
         return 1
@@ -2732,6 +3667,8 @@ def main(argv=None):
             return cmd_version_check()
         if a.cmd == "release-age":
             return cmd_release_age(a.ecosystem, a.name, a.version, a.folder, a.min_hours)
+        if a.cmd == "lock-check":
+            return cmd_lock_check(a.before, a.after, a.folder, a.min_hours)
         if a.cmd == "inventory":
             return cmd_inventory(a.folder)
         if a.cmd == "check":

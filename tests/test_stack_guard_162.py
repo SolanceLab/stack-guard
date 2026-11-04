@@ -1,3 +1,4 @@
+# stack-guard — Copyright (c) 2026 House of Solance. MIT License, see LICENSE. Required Notice: Copyright (c) 2026 House of Solance (https://github.com/SolanceLab)
 """1.6.2: the daily watch refreshes its script copy only from the user's own plugin folders."""
 import os
 import tempfile

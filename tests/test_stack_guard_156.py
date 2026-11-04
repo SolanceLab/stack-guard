@@ -90,7 +90,8 @@ class ReleaseAgeBounds(unittest.TestCase):
 
 class StackFixPinsCheckedVersion(unittest.TestCase):
     def test_skill_pins_instead_of_ranges(self):
-        text = open(os.path.join(os.path.dirname(__file__), "..", "plugins", "stack-guard", "skills", "stack-fix", "SKILL.md")).read()
+        with open(os.path.join(os.path.dirname(__file__), "..", "plugins", "stack-guard", "skills", "stack-fix", "SKILL.md")) as fh:
+            text = fh.read()
         self.assertIn("--save-exact", text)
         self.assertNotIn('"^7.3.7"', text)
 
