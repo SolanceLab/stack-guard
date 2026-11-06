@@ -1,4 +1,4 @@
-# stack-guard — Copyright (c) 2026 House of Solance. MIT License, see LICENSE. Required Notice: Copyright (c) 2026 House of Solance (https://github.com/SolanceLab)
+# stack-guard — Copyright (c) 2026 House of Solance. PolyForm Noncommercial 1.0.0. Required Notice: Copyright (c) 2026 House of Solance (https://github.com/SolanceLab)
 """Offline tests for 1.5.0: secrets committed to git, standalone tools, "Was I hit?" files, deploy-runtime line.
 Run: python3 -m unittest discover -s tests -v"""
 import json
@@ -17,7 +17,7 @@ import stack_guard as sg
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
 REAL_WHICH = shutil.which
 REAL_RUN = sg.run_cmd  # captured before Base patches it
-PLUGIN = os.path.join(ROOT, "plugins", "stack-guard")
+PLUGIN = os.path.join(ROOT, "plugin")
 CANARY = "LITERAL-CANARY-9f8e7d6c"
 GIT = ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false"]
 
@@ -481,10 +481,12 @@ class DeployRuntimeAndVersion(unittest.TestCase):
             self.assertIn("deploy-runtime check: passed / failed / not possible", fh.read())
 
     def test_all_manifests_say_the_script_version(self):
-        self.assertEqual(sg.VERSION, "1.6.3")
-        for rel in (("plugins", "stack-guard", ".claude-plugin", "plugin.json"), ("plugins", "stack-guard", ".codex-plugin", "plugin.json")):
+        self.assertEqual(sg.VERSION, "1.7.0")
+        for rel in (("plugin", ".claude-plugin", "plugin.json"), ("plugin", ".codex-plugin", "plugin.json")):
             with open(os.path.join(ROOT, *rel), encoding="utf-8") as fh:
                 self.assertEqual(json.load(fh)["version"], sg.VERSION)
+        with open(os.path.join(ROOT, "plugins", "stack-guard", ".claude-plugin", "plugin.json"), encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh)["version"], sg.VERSION, "the version-only file for pre-1.7.0 installs")
         for rel in ((".claude-plugin", "marketplace.json"), (".agents", "plugins", "marketplace.json")):
             with open(os.path.join(ROOT, *rel), encoding="utf-8") as fh:
                 text = fh.read()

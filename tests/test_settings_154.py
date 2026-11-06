@@ -1,4 +1,4 @@
-# stack-guard — Copyright (c) 2026 House of Solance. MIT License, see LICENSE. Required Notice: Copyright (c) 2026 House of Solance (https://github.com/SolanceLab)
+# stack-guard — Copyright (c) 2026 House of Solance. PolyForm Noncommercial 1.0.0. Required Notice: Copyright (c) 2026 House of Solance (https://github.com/SolanceLab)
 """Offline tests for 1.5.4: the three user settings (secret_guard, reply_check, update_check).
 Run: python3 -m unittest discover -s tests -v"""
 import importlib.util
@@ -14,7 +14,7 @@ from test_stack_guard import Base, HERE
 import stack_guard as sg
 
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
-PLUGIN = os.path.join(ROOT, "plugins", "stack-guard")
+PLUGIN = os.path.join(ROOT, "plugin")
 SECRET_VALUE = "SETTINGS-CANARY-4d3c2b1a"
 HOOKS = os.path.join(PLUGIN, "hooks")
 

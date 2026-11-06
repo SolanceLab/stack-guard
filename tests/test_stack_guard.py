@@ -1,4 +1,4 @@
-# stack-guard — Copyright (c) 2026 House of Solance. MIT License, see LICENSE. Required Notice: Copyright (c) 2026 House of Solance (https://github.com/SolanceLab)
+# stack-guard — Copyright (c) 2026 House of Solance. PolyForm Noncommercial 1.0.0. Required Notice: Copyright (c) 2026 House of Solance (https://github.com/SolanceLab)
 """Offline tests for stack_guard.py. Run: python3 -m unittest discover -s tests -v"""
 import io
 import json
@@ -14,7 +14,7 @@ import unittest
 from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(HERE, "..", "plugins", "stack-guard", "scripts"))
+sys.path.insert(0, os.path.join(HERE, "..", "plugin", "scripts"))
 import stack_guard as sg  # noqa: E402
 
 REAL_NOTIFY = sg.notify_desktop  # Base replaces sg.notify_desktop with a Mock
@@ -92,6 +92,7 @@ class Base(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.folder = os.path.join(self.tmp, "work")
         shutil.copytree(os.path.join(FIX, "sample"), self.folder)
+        os.rename(os.path.join(self.folder, "dot-mcp.json"), os.path.join(self.folder, ".mcp.json"))
         self.home = os.path.join(self.tmp, "home")
         os.makedirs(self.home)
         self.date = ["2026-10-23"]

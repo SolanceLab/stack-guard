@@ -1,4 +1,4 @@
-# stack-guard — Copyright (c) 2026 House of Solance. MIT License, see LICENSE. Required Notice: Copyright (c) 2026 House of Solance (https://github.com/SolanceLab)
+# stack-guard — Copyright (c) 2026 House of Solance. PolyForm Noncommercial 1.0.0. Required Notice: Copyright (c) 2026 House of Solance (https://github.com/SolanceLab)
 """Offline tests for 1.5.6: fixes wait for a safe release age, and known malicious releases come first.
 Run: python3 -m unittest discover -s tests -v"""
 import datetime
@@ -90,7 +90,7 @@ class ReleaseAgeBounds(unittest.TestCase):
 
 class StackFixPinsCheckedVersion(unittest.TestCase):
     def test_skill_pins_instead_of_ranges(self):
-        with open(os.path.join(os.path.dirname(__file__), "..", "plugins", "stack-guard", "skills", "stack-fix", "SKILL.md")) as fh:
+        with open(os.path.join(os.path.dirname(__file__), "..", "plugin", "skills", "stack-fix", "SKILL.md")) as fh:
             text = fh.read()
         self.assertIn("--save-exact", text)
         self.assertNotIn('"^7.3.7"', text)

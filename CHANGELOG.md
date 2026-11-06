@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.7.0
+
+- Changed: from this version stack-guard is released under the PolyForm Noncommercial License 1.0.0 (free for noncommercial use, credit required, commercial use needs permission). Versions up to 1.6.3 were released under the MIT licence and stay under it. The MIT notice and permission text for them stays in NOTICE.md.
+- Changed: the plugin now lives in the `plugin/` folder of the repository. Installing and updating work the same way (`/plugin install stack-guard@stack-guard`); copies installed before 1.7.0 still hear about updates.
+- New: a `stack-guard` skill that says where to start, a contract file, a `make test` command, a secret scan on every push, and weekly dependency updates for the repository's own workflows.
+- Every source file's first line now names the project and its licence.
+
 ## 1.6.3
 
 - New: background services on this computer are listed and security-checked. macOS launchd, Linux user systemd and cron, and Windows scheduled tasks are read (names and paths only, never a service's arguments or settings), together with what listens on which port. The inventory has two new sections, `Services on this computer` and `Listening ports`; the check report has a `Services` section and a new-services line in "New since last check".

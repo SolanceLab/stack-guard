@@ -1,4 +1,4 @@
-# stack-guard — Copyright (c) 2026 House of Solance. MIT License, see LICENSE. Required Notice: Copyright (c) 2026 House of Solance (https://github.com/SolanceLab)
+# stack-guard — Copyright (c) 2026 House of Solance. PolyForm Noncommercial 1.0.0. Required Notice: Copyright (c) 2026 House of Solance (https://github.com/SolanceLab)
 import base64
 import json
 import os
@@ -9,7 +9,7 @@ import unittest
 from unittest import mock
 from urllib.parse import quote
 
-HOOK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "plugins", "stack-guard", "hooks", "egress_guard.py")
+HOOK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "plugin", "hooks", "egress_guard.py")
 NAME, EMAIL, USER = "Zelda Quixote Fenwick", "zqf@example.org", "zqfuser"
 
 
@@ -422,7 +422,7 @@ class RoundThree(unittest.TestCase):
 
     def test_windows_drive_letter_is_a_local_source(self):
         import importlib.util
-        spec = importlib.util.spec_from_file_location("eg", os.path.join(os.path.dirname(__file__), "..", "plugins", "stack-guard", "hooks", "egress_guard.py"))
+        spec = importlib.util.spec_from_file_location("eg", os.path.join(os.path.dirname(__file__), "..", "plugin", "hooks", "egress_guard.py"))
         eg = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(eg)
         dirty = os.path.join(self.tmp, "dirty.txt")

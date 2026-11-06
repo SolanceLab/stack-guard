@@ -1,4 +1,4 @@
-# stack-guard — Copyright (c) 2026 House of Solance. MIT License, see LICENSE. Required Notice: Copyright (c) 2026 House of Solance (https://github.com/SolanceLab)
+# stack-guard — Copyright (c) 2026 House of Solance. PolyForm Noncommercial 1.0.0. Required Notice: Copyright (c) 2026 House of Solance (https://github.com/SolanceLab)
 """Tests for hooks/secret_guard.py. Run: python3 -m unittest discover -s tests -v"""
 import json
 import os
@@ -8,7 +8,7 @@ import tempfile, shutil
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-GUARD = os.path.join(HERE, "..", "plugins", "stack-guard", "hooks", "secret_guard.py")
+GUARD = os.path.join(HERE, "..", "plugin", "hooks", "secret_guard.py")
 FAKE_JWT = "eyJ" + "a" * 12 + "." + "b" * 12 + "." + "c" * 12  # built in parts, not a real token
 
 
@@ -94,7 +94,7 @@ class PreToolUse(unittest.TestCase):
         d = self.tree("a/one.py")
         with open(os.path.join(d, "a", "x"), "w") as fh:
             fh.write("x")
-        sys.path.insert(0, os.path.join(HERE, "..", "plugins", "stack-guard", "hooks"))
+        sys.path.insert(0, os.path.join(HERE, "..", "plugin", "hooks"))
         try:
             import secret_guard
         finally:

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# stack-guard — Copyright (c) 2026 House of Solance. MIT License, see LICENSE. Required Notice: Copyright (c) 2026 House of Solance (https://github.com/SolanceLab)
+# stack-guard — Copyright (c) 2026 House of Solance. PolyForm Noncommercial 1.0.0. Required Notice: Copyright (c) 2026 House of Solance (https://github.com/SolanceLab)
 """stack-guard: list what your projects run on, check it for known problems, tell you what is new.
 
 Python 3.9+, standard library only. Run:  python3 stack_guard.py <command> [folder]
@@ -68,7 +68,7 @@ LABEL = "dev.stack-guard.watch"
 DEEPER_HOW = "to scan it, run stack-guard on that folder directly, or add --depth N to check or inventory"
 SECRET_WORD = re.compile(r"token|key|secret|password|auth", re.I)
 OSV_BATCH = "https://api.osv.dev/v1/querybatch"
-VERSION = "1.6.3"
+VERSION = "1.7.0"
 HIGH_SEVS = ("MALICIOUS", "CRITICAL", "HIGH")
 EOL_URL = "https://endoflife.date/api/%s.json"
 SKIP_DIRS = {"node_modules", "venv", "dist", "build", "worktrees", "__pycache__"}  # dot-folders are skipped too

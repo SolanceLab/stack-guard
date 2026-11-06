@@ -1,10 +1,18 @@
 # stack-guard
 
+Made by House of Solance · free for noncommercial use · credit required
+
+## What it is
+
 **One prompt to check everything you build and run with Claude Code or Codex for known security holes, and fix the safe ones.**
 
 Supply-chain attacks and urgent security releases are landing every week (hijacked PyPI and npm packages, Node.js and Python security releases, MCP SDK fixes). stack-guard lets Claude find what you actually run, check it against the public vulnerability databases, read this fortnight's security news for your exact versions, explain it all in plain words, and then patch what can be patched safely, after your yes.
 
-## Install (once)
+## What you need
+
+Claude Code or Codex. Node/npm for JavaScript projects. For Python, [`uv`](https://docs.astral.sh/uv/) (or `pipx`) makes the check faster; without it, stack-guard makes a throwaway environment and deletes it afterwards.
+
+## Install
 
 In Claude Code:
 
@@ -56,11 +64,36 @@ You can also just say: *"check my stack for security problems"*.
 - `/stack-guard:inventory` runs the script to write `STACK-INVENTORY.md`: a plain list of every project, where it's deployed, its runtime, package counts and MCP servers, with anything it couldn't place flagged at the top. Keep it (it describes your setup, so review it before committing it anywhere public). When the next security alert lands, you'll know in seconds whether it touches you.
 - `/stack-guard:watch` sets up a **daily routine on your own computer** (launchd on Mac, cron on Linux, Task Scheduler on Windows). It shows you the exact entry and asks before adding it. Each morning the script checks everything on the list, a **news scout agent** reads the last 14 days of security news for your versions, and an **explainer agent** writes what's new in plain words. You get **only what changed since yesterday**: a desktop notification, a report in `.stack-guard/reports/`, and optionally a Discord or Slack webhook. `/stack-guard:watch --off` removes it.
 
-## How it works: script + agents
+## Settings
 
-- **The script** (`scripts/stack_guard.py`, Python standard library only) does the exact, repeatable part. It reads these lockfiles: npm `package-lock.json` (v2/v3), pinned `requirements*.txt`, `Pipfile.lock`, and `poetry.lock` / `uv.lock` on Python 3.11+. pnpm, Yarn, Bun, Go, Rust, Ruby and PHP projects are listed by the daily watch but package-checked only in a `/stack-guard` conversation. It lists every project, deploy config, runtime and MCP server, checks every package against [OSV.dev](https://osv.dev) and every runtime against [endoflife.date](https://endoflife.date), and compares with the last run. Same result every time, free to run every day.
-- **The agents** do the judgment: the news scout (web search only), the explainer (no tools), and in a conversation, the auditor and the fixer. They only get public package names and versions.
-- With no Python, the agents do everything by hand from the same instructions.
+Six settings (four switches, all on by default, the fix release age of 48 hours, and a list of exempt MCP servers). Change them when you install (`/plugin`), later with `/plugin configure stack-guard@stack-guard` or `/config`, or from a terminal install: `claude plugin install stack-guard@stack-guard --config reply_check=false`.
+
+| Setting | What turning it off means |
+| --- | --- |
+| `secret_guard` ("Secret guard") | All three secret-guard hooks stop before they read anything. Nothing is blocked or redacted. |
+| `reply_check` ("Final-reply check") | Only the Stop hook stops. It is the one that reads the session's history on this computer (nothing leaves the computer) to check each reply for secret shapes. The other two secret-guard hooks keep working. |
+| `update_check` ("Update check") | No daily request to GitHub for the version number: not at session start, not in `/stack-guard`, not in the daily watch. `version-check` says "Update check is turned off." |
+
+| `egress_guard` ("Egress guard") | The egress guard hook stops before it reads anything and allows every call. |
+| `egress_exempt_servers` ("Egress guard: exempt MCP servers") | Comma-separated exact MCP server names the egress guard never checks, for example your own memory servers. Empty by default. |
+| `min_release_hours` ("Fix release age (hours)") | How long a fixed version must have been public before the fixer installs it (default 48). `0` takes new versions at once. `stack_guard.py release-age <npm\|PyPI> <name> <version>` shows the verdict; it asks the registry for public package names only. |
+
+`PLUGIN_UPDATE_CHECK=0` still turns the update check off too.
+
+## Tools
+
+| Tool | What it does |
+|---|---|
+| `/stack-guard` | Finds what you run, checks it, reports in plain words, and offers the safe fixes. In Codex: `$stack-guard:run-stack-guard`. |
+| `/stack-guard:inventory` | Writes `STACK-INVENTORY.md`, a plain list of everything you build and run. |
+| `/stack-guard:watch` | Sets up the daily routine on your own computer, after your yes. |
+| Skills | `stack-guard` (where to start), `run-stack-guard`, `stack-audit`, `stack-fix`, `stack-breach-check`. |
+| Agents | `stack-auditor`, `stack-news-scout`, `stack-breach-checker` (read-only) and `stack-fixer` (only after your yes). |
+| Hooks | The secret guard (three hooks), the egress guard and the daily update check; each can be switched off in Settings. |
+
+## Limits
+
+Container image scanning, GitHub Actions pinning, package signatures/provenance, full secret scanning of every file and of git history contents (it checks the usual secret files: .mcp.json, .env, keys, .npmrc), traffic analysis beyond what your host's own logs hold, and Maven/Gradle/NuGet without lockfiles. macOS and Linux are fully supported; Windows works on a best-effort basis and the report lists what it skipped. On Windows the daily watch writes the report and sends the webhook; it shows no desktop pop-up.
 
 ## Before you run it (please)
 
@@ -106,22 +139,6 @@ Each finding ends in one verdict: `not reachable`, `reachable, no signs found`, 
 
 The daily watch does not run these checks (no agent works unattended). It adds one line to its report when there are new high or critical live findings: "Run /stack-guard to check whether these were used against you."
 
-## Settings
-
-Six settings (four switches, all on by default, the fix release age of 48 hours, and a list of exempt MCP servers). Change them when you install (`/plugin`), later with `/plugin configure stack-guard@stack-guard` or `/config`, or from a terminal install: `claude plugin install stack-guard@stack-guard --config reply_check=false`.
-
-| Setting | What turning it off means |
-| --- | --- |
-| `secret_guard` ("Secret guard") | All three secret-guard hooks stop before they read anything. Nothing is blocked or redacted. |
-| `reply_check` ("Final-reply check") | Only the Stop hook stops. It is the one that reads the session's history on this computer (nothing leaves the computer) to check each reply for secret shapes. The other two secret-guard hooks keep working. |
-| `update_check` ("Update check") | No daily request to GitHub for the version number: not at session start, not in `/stack-guard`, not in the daily watch. `version-check` says "Update check is turned off." |
-
-| `egress_guard` ("Egress guard") | The egress guard hook stops before it reads anything and allows every call. |
-| `egress_exempt_servers` ("Egress guard: exempt MCP servers") | Comma-separated exact MCP server names the egress guard never checks, for example your own memory servers. Empty by default. |
-| `min_release_hours` ("Fix release age (hours)") | How long a fixed version must have been public before the fixer installs it (default 48). `0` takes new versions at once. `stack_guard.py release-age <npm\|PyPI> <name> <version>` shows the verdict; it asks the registry for public package names only. |
-
-`PLUGIN_UPDATE_CHECK=0` still turns the update check off too.
-
 ## Secret guard
 
 Your agents can still work with secrets: use them, rotate them, set them. During a stack-guard run, the guard only stops a secret's value from being printed into the chat.
@@ -166,26 +183,48 @@ Limits: it reads text. A file name built while the command runs (for example fro
 
 Your source code, keys, `.env` files and file paths are not sent anywhere, and stack-guard keeps tokens out of its reports.
 
-## Not covered yet
+## How it works
 
-Container image scanning, GitHub Actions pinning, package signatures/provenance, full secret scanning of every file and of git history contents (it checks the usual secret files: .mcp.json, .env, keys, .npmrc), traffic analysis beyond what your host's own logs hold, and Maven/Gradle/NuGet without lockfiles. macOS and Linux are fully supported; Windows works on a best-effort basis and the report lists what it skipped. On Windows the daily watch writes the report and sends the webhook; it shows no desktop pop-up.
-
-## Needs
-
-Claude Code or Codex. Node/npm for JavaScript projects. For Python, [`uv`](https://docs.astral.sh/uv/) (or `pipx`) makes the check faster; without it, stack-guard makes a throwaway environment and deletes it afterwards.
+- **The script** (`scripts/stack_guard.py`, Python standard library only) does the exact, repeatable part. It reads these lockfiles: npm `package-lock.json` (v2/v3), pinned `requirements*.txt`, `Pipfile.lock`, and `poetry.lock` / `uv.lock` on Python 3.11+. pnpm, Yarn, Bun, Go, Rust, Ruby and PHP projects are listed by the daily watch but package-checked only in a `/stack-guard` conversation. It lists every project, deploy config, runtime and MCP server, checks every package against [OSV.dev](https://osv.dev) and every runtime against [endoflife.date](https://endoflife.date), and compares with the last run. Same result every time, free to run every day.
+- **The agents** do the judgment: the news scout (web search only), the explainer (no tools), and in a conversation, the auditor and the fixer. They only get public package names and versions.
+- With no Python, the agents do everything by hand from the same instructions.
 
 ## Help make it better
 
 Spotted a gap? A stack it misses, a check that's wrong, a fix that went sideways, a security story it should have caught? Please tell us.
 
 - **Open an issue:** https://github.com/SolanceLab/stack-guard/issues. Say what you ran, what you expected, and what happened. Leave keys, tokens and private project names out.
-- **Send a pull request:** everything lives in plain Markdown under `plugins/stack-guard/` (`commands/`, `skills/`, `agents/`). Keep the safety rules intact: the audit runs no freshly downloaded code, fixes stay same-major with install scripts off, and nothing deploys, commits, or touches the wider machine without the user's separate yes.
+- **Send a pull request:** everything lives in plain Markdown under `plugin/` (`commands/`, `skills/`, `agents/`). Keep the safety rules intact: the audit runs no freshly downloaded code, fixes stay same-major with install scripts off, and nothing deploys, commits, or touches the wider machine without the user's separate yes.
 - **Found a security problem in stack-guard itself?** Please report it privately through GitHub's "Report a vulnerability" button on the Security tab, not in a public issue. Past fixes are listed in [SECURITY.md](SECURITY.md).
 
 ## Thanks
 
 Thanks to Aya ([@ayakohi](https://github.com/ayakohi)), whose question started the secret guard, and to Cygnus, who read the whole plugin, caught that agents loaded the user's own instruction files, and wrote the named-secret redaction.
 
-## License
+## Credit and use
 
-MIT
+stack-guard is made by House of Solance. You're welcome to use it, change it and build on it for any noncommercial purpose, as long as our credit travels with it.
+
+**Keep the credit.** Every copy, changed or not, must carry the licence and this line:
+`Required Notice: Copyright (c) 2026 House of Solance (https://github.com/SolanceLab)`
+Removing or replacing it breaks the licence.
+
+**Commercial use needs our permission.** Ask us first.
+
+**We look for copies.** When we find our work without its credit, or used commercially without permission, we ask for it to be taken down.
+
+Versions up to 1.6.3 were released under the MIT licence and stay under it. From 1.7.0 the licence is PolyForm Noncommercial 1.0.0.
+
+## Licence
+
+[PolyForm Noncommercial 1.0.0](LICENSE.md). See [NOTICE.md](NOTICE.md).
+
+## Support
+
+If you find this useful, consider supporting our work:
+
+[![Ko-fi](https://img.shields.io/badge/Ko--fi-Support%20Us-ff5e5b?logo=ko-fi&logoColor=white)](https://ko-fi.com/houseofsolance)
+
+---
+
+*Built by [House of Solance](https://github.com/SolanceLab) — Chadrien Solance & Anne Solance*
