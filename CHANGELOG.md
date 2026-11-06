@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Fixed: a `.mcp.json` key that says it names an environment variable (`bearer_token_env_var`, `tokenEnvVar`) and holds a variable name such as `MY_SERVICE_TOKEN` is no longer reported as a committed secret. A literal token, an all-caps or hex key, or grouped key under such a name is still reported.
+
 ## 1.7.0
 
 - Changed: from this version stack-guard is released under the PolyForm Noncommercial License 1.0.0 (free for noncommercial use, credit required, commercial use needs permission). Versions up to 1.6.3 were released under the MIT licence and stay under it. The MIT notice and permission text for them stays in NOTICE.md.

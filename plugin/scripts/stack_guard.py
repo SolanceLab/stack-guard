@@ -1821,6 +1821,23 @@ def safe_name(k):
     return k if re.fullmatch(r"[A-Za-z0-9_.\-]{1,60}", k) else "(unnamed key)"
 
 
+ENV_NAME_VALUE = re.compile(r"_?[A-Z][A-Z0-9]{0,19}(?:_[A-Z0-9]{1,20}){1,7}")  # words joined by underscores; at least one underscore
+ENV_NAME_KEY = re.compile(r"(?:_env_var(?:iable)?|EnvVar(?:iable)?)$")  # Codex's bearer_token_env_var and kin: the key SAYS its value names a variable
+
+
+def names_env_var(v):
+    """True when v reads as a variable NAME, not a key: underscore-joined short words, few digits (an all-caps or hex token stays a secret)."""
+    v = v.strip()
+    if not ENV_NAME_VALUE.fullmatch(v) or len(v) > 64:
+        return False
+    if sum(c.isdigit() for c in v) * 4 > len(v):
+        return False
+    segs = [s for s in v.split("_") if s]
+    if any(len(s) >= 3 and not re.search(r"[AEIOUY]", s) for s in segs):
+        return False  # variable names are words; QJTX_NZKP is a grouped key (Codex review, 7 Nov)
+    return not (len(segs) >= 3 and len({len(s) for s in segs}) == 1)  # uniform groups are the shape of licence keys
+
+
 def json_secret_names(node, in_env=False, out=None):
     """Names (never values) of keys holding a literal under env/headers or under a secret-looking key."""
     out = [] if out is None else out
@@ -1828,7 +1845,8 @@ def json_secret_names(node, in_env=False, out=None):
         for k, v in node.items():
             if isinstance(v, str):
                 bare_url = bool(re.match(r"https?://[^@/\s]*(/|$)", v.strip())) and not in_env
-                if (in_env or SECRET_WORD.search(str(k))) and not is_placeholder(v) and not bare_url:
+                env_ref = not in_env and bool(ENV_NAME_KEY.search(str(k))) and names_env_var(v)
+                if (in_env or SECRET_WORD.search(str(k))) and not is_placeholder(v) and not bare_url and not env_ref:
                     out.append(safe_name(k))
             else:
                 json_secret_names(v, in_env or str(k).lower() in ("env", "headers"), out)
