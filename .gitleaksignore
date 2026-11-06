@@ -1,0 +1,3 @@
+# A fake key used by tests/test_stack_guard_163.py to prove the secret guard never repeats a token.
+# (24 characters, not a real key; this is the only entry.)
+0f31579cbbc9c3a2edf44a0f4d2d8fe4df5fc9ee:tests/test_stack_guard_163.py:generic-api-key:18
