@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# stack-guard — Copyright (c) 2026 House of Solance. MIT License, see LICENSE. Required Notice: Copyright (c) 2026 House of Solance (https://github.com/SolanceLab)
+# stack-guard — Copyright (c) 2026 House of Solance. PolyForm Noncommercial 1.0.0. Required Notice: Copyright (c) 2026 House of Solance (https://github.com/SolanceLab)
 """Secret guard. PreToolUse: block reads of secret files. PostToolUse (--post): redact secrets from tool output.
 Stop (--stop): warn when a reply holds a secret. All three act only while stack-guard is in use."""
 import fnmatch

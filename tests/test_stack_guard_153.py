@@ -1,4 +1,4 @@
-# stack-guard — Copyright (c) 2026 House of Solance. MIT License, see LICENSE. Required Notice: Copyright (c) 2026 House of Solance (https://github.com/SolanceLab)
+# stack-guard — Copyright (c) 2026 House of Solance. PolyForm Noncommercial 1.0.0. Required Notice: Copyright (c) 2026 House of Solance (https://github.com/SolanceLab)
 """Offline tests for 1.5.3: a private Python index set for the whole computer, and files that point outside the scanned folder.
 Run: python3 -m unittest discover -s tests -v"""
 import json

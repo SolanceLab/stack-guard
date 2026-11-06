@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# stack-guard — Copyright (c) 2026 House of Solance. MIT License, see LICENSE. Required Notice: Copyright (c) 2026 House of Solance (https://github.com/SolanceLab)
+# stack-guard — Copyright (c) 2026 House of Solance. PolyForm Noncommercial 1.0.0. Required Notice: Copyright (c) 2026 House of Solance (https://github.com/SolanceLab)
 """plugin-update-check: tell the user when a newer version of this plugin exists.
 
 Copy this file verbatim into a plugin's hooks/ folder and call it from a

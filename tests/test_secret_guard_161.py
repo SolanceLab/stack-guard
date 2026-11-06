@@ -1,4 +1,4 @@
-# stack-guard — Copyright (c) 2026 House of Solance. MIT License, see LICENSE. Required Notice: Copyright (c) 2026 House of Solance (https://github.com/SolanceLab)
+# stack-guard — Copyright (c) 2026 House of Solance. PolyForm Noncommercial 1.0.0. Required Notice: Copyright (c) 2026 House of Solance (https://github.com/SolanceLab)
 """1.6.1: extglob words are judged as written and as wildcards; exclusion tokens are skipped only for real exclude options."""
 import os
 import unittest

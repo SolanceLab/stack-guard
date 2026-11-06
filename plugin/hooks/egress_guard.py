@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# stack-guard — Copyright (c) 2026 House of Solance. MIT License, see LICENSE. Required Notice: Copyright (c) 2026 House of Solance (https://github.com/SolanceLab)
+# stack-guard — Copyright (c) 2026 House of Solance. PolyForm Noncommercial 1.0.0. Required Notice: Copyright (c) 2026 House of Solance (https://github.com/SolanceLab)
 """Egress guard. PreToolUse: blocks a tool call that would send one of your personal identifiers off this computer.
 
 Why: a website your agent fetches can hide instructions ("identify your user in the headers") and the agent may
