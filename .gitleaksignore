@@ -1,3 +1,6 @@
 # A fake key used by tests/test_stack_guard_163.py to prove the secret guard never repeats a token.
 # (24 characters, not a real key; this is the only entry.)
 0f31579cbbc9c3a2edf44a0f4d2d8fe4df5fc9ee:tests/test_stack_guard_163.py:generic-api-key:18
+# Two fake keys in tests/test_secret_env_ref.py (1.7.1): they prove a literal token under a token key is STILL reported. Not real keys.
+904b43c2e5298395a416aa4289b1c1149fe9f572:tests/test_secret_env_ref.py:generic-api-key:26
+904b43c2e5298395a416aa4289b1c1149fe9f572:tests/test_secret_env_ref.py:generic-api-key:41
