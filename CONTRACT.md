@@ -8,7 +8,7 @@
 | `/stack-guard:inventory` | `STACK-INVENTORY.md`: what the user builds and runs |
 | `/stack-guard:watch` | A daily routine on the user's own computer, set up after a yes |
 | `plugin/scripts/stack_guard.py` | The same checks from a terminal: `inventory`, `check`, `lock-check`, `release-age`, `version-check` |
-| Hooks | Secret guard, egress guard, daily update check (each can be switched off) |
+| Hooks | Secret guard, daily update check (each can be switched off) |
 
 ## Data it owns
 
@@ -25,6 +25,5 @@ Named here, never valued. stack-guard needs no key and holds none.
 
 | Name | What it is |
 |---|---|
-| `secret_guard`, `reply_check`, `update_check`, `egress_guard` | Switches, on by default |
+| `secret_guard`, `reply_check`, `update_check` | Switches, on by default |
 | `min_release_hours` | How long a fixed version must be public before the fixer installs it (48) |
-| `egress_exempt_servers` | MCP server names the egress guard never checks |

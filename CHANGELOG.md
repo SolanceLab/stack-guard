@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.8.0
+
+- Removed the egress guard and its two settings. It blocked legitimate work, including people's own tools, and a check on command text cannot do this job well.
+
 ## 1.7.2
 
 - The egress guard now checks only what leaves the computer: URLs, outgoing flag values, remote-shell arguments, and uploaded files.
