@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.7.1
 
 - Fixed: a `.mcp.json` key that says it names an environment variable (`bearer_token_env_var`, `tokenEnvVar`) and holds a variable name such as `MY_SERVICE_TOKEN` is no longer reported as a committed secret. A literal token, an all-caps or hex key, or grouped key under such a name is still reported.
 
