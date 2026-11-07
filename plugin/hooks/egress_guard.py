@@ -282,7 +282,7 @@ def upload_files(cmd):
     refs = []
     for i, t in enumerate(flat):
         nxt = flat[i + 1] if i + 1 < len(flat) else ""
-        if t in ("-d", "--data", "--data-binary", "--data-raw", "--data-urlencode", "--json") and "@" in nxt:
+        if t in ("-d", "--data", "--data-binary", "--data-urlencode", "--json") and "@" in nxt:
             refs.append(nxt.split("@", 1)[1])
         elif t.startswith("-d@"):
             refs.append(t[3:])
@@ -356,31 +356,92 @@ REMOTE_OPTION_VALUES = {"-b", "-c", "-D", "-E", "-F", "-i", "-J", "-L", "-l", "-
                         "-p", "-R", "-S", "-W", "-w", "--config", "--port", "--rsh", "--rsync-path"}
 REMOTE_EXES = ("ssh", "scp", "sftp", "rsync")
 HTTP_URL_RX = re.compile(r"https?://[^\s'\"]+", re.I)
+PIPE_SINK_EXES = {"curl", "wget", "nc", "ncat", "netcat", "socat"}
+
+
+def shell_pipeline_groups(cmd):
+    """Split shell text at unquoted command and pipeline operators, preserving each segment's original text."""
+    groups, pipe, buf, quote, escaped = [], [], [], "", False
+    i = 0
+    while i < len(cmd):
+        c = cmd[i]
+        if escaped:
+            buf.append(c)
+            escaped = False
+        elif c == "\\" and quote != "'":
+            buf.append(c)
+            escaped = True
+        elif quote:
+            buf.append(c)
+            if c == quote:
+                quote = ""
+        elif c in "'\"":
+            buf.append(c)
+            quote = c
+        elif c == "|" and i + 1 < len(cmd) and cmd[i + 1] == "|":
+            pipe.append("".join(buf))
+            groups.append(pipe)
+            pipe, buf = [], []
+            i += 1
+        elif c == "|":
+            pipe.append("".join(buf))
+            buf = []
+        elif c == "&" and i + 1 < len(cmd) and cmd[i + 1] == "&":
+            pipe.append("".join(buf))
+            groups.append(pipe)
+            pipe, buf = [], []
+            i += 1
+        elif c in ";\n":
+            pipe.append("".join(buf))
+            groups.append(pipe)
+            pipe, buf = [], []
+        else:
+            buf.append(c)
+        i += 1
+    pipe.append("".join(buf))
+    groups.append(pipe)
+    return groups
 
 
 def outgoing_flag_values(cmd):
-    """Literal values of flags whose contents leave the computer, plus a visible producer piped to an @- upload."""
+    """Literal values of outgoing flags, and every visible segment piped into a network sink."""
+    def literal(flag, value):
+        # @file, field=@file and field=<file are local references; upload_files() reads and checks their contents.
+        if flag in ("-d", "--data", "--data-binary", "--data-ascii", "--json", "-H", "--header") and value.startswith("@"):
+            return None
+        if flag == "--data-urlencode" and "@" in value:
+            return value.split("@", 1)[0]
+        if flag in ("-F", "--form") and re.search(r"=[@<]", value):
+            return re.split(r"=[@<]", value, maxsplit=1)[0]
+        return value
+
     out = []
-    for part in re.split(r"&&|\|\||[;|\n]", cmd):
-        try:
-            toks = shlex.split(part)
-        except ValueError:
-            toks = part.split()
-        starts = [i for i, t in enumerate(toks) if os.path.basename(t) in ("curl", "wget", "http", "https")]
-        if not starts:
-            continue
-        toks = toks[starts[0]:]
-        for i, t in enumerate(toks):
-            if t in EGRESS_FLAGS and i + 1 < len(toks):
-                out.append(toks[i + 1])
-            elif t.startswith("--") and "=" in t and t.split("=", 1)[0] in EGRESS_FLAGS:
-                out.append(t.split("=", 1)[1])
-            elif len(t) > 2 and t[:2] in {"-d", "-H", "-F", "-u", "-A", "-e", "-b", "-X", "-x"}:
-                out.append(t[2:])
-    if STDIN_UPLOAD_RX.search(cmd):
-        before = cmd.rsplit("|", 1)[0] if "|" in cmd else ""
-        if before:
-            out.append(before)
+    for pipe in shell_pipeline_groups(cmd):
+        for pipe_i, part in enumerate(pipe):
+            try:
+                toks = shlex.split(part)
+            except ValueError:
+                toks = part.split()
+            starts = [i for i, t in enumerate(toks)
+                      if os.path.basename(t) in ("curl", "wget", "http", "https")]
+            if starts:
+                sent = toks[starts[0]:]
+                for i, t in enumerate(sent):
+                    if t in EGRESS_FLAGS and i + 1 < len(sent):
+                        value = literal(t, sent[i + 1])
+                        if value is not None:
+                            out.append(value)
+                    elif t.startswith("--") and "=" in t and t.split("=", 1)[0] in EGRESS_FLAGS:
+                        flag, value = t.split("=", 1)
+                        value = literal(flag, value)
+                        if value is not None:
+                            out.append(value)
+                    elif len(t) > 2 and t[:2] in {"-d", "-H", "-F", "-u", "-A", "-e", "-b", "-X", "-x"}:
+                        value = literal(t[:2], t[2:])
+                        if value is not None:
+                            out.append(value)
+            if pipe_i and any(os.path.basename(t) in PIPE_SINK_EXES for t in toks):
+                out.extend(p.strip() for p in pipe[:pipe_i] if p.strip())
     return out
 
 
@@ -510,7 +571,9 @@ def outgoing_segments(tool, ti):
         if not (NET_RX.search(cmd) or NET_RX.search(flat)):
             return None
         segs = [(u, False) for u in HTTP_URL_RX.findall(cmd)]
-        segs += [(v, True) for v in outgoing_flag_values(cmd)]
+        # These strings are data leaving the machine, never local command arguments. In particular, do not
+        # apply the local-path exemption to an outgoing flag value or to a producer piped into a network client.
+        segs += [(v, False) for v in outgoing_flag_values(cmd)]
         segs += [(v, False) for v in remote_arguments(cmd)]
         # curl, scp and friends resolve relative paths against where they run; a leading `cd DIR &&` moves that
         base = None

