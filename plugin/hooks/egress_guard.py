@@ -11,10 +11,9 @@ STACK_GUARD_IDENTIFIERS (paths joined by the OS path separator) replaces that fi
 missing list turns the guard off (everything is allowed). The identifier is never printed, logged or stored.
 Settings: egress_guard (default on; off = this hook reads nothing and allows), egress_exempt_servers
 (comma-separated exact MCP server names that are never checked).
-Limit: identifiers assembled at run time from variables or command substitution, and whole folders copied by
-rsync, are outside what a text check can see; the Claude Code sandbox is the wall for those.
-Accepted limit: in a shell command only, the bare home-folder name is ignored inside Claude Code's encoded folder names
-and in local-only path arguments (names and emails never are; URLs, WebFetch, MCP and file bodies are checked in full).
+Scope: this guard checks what leaves the computer (URLs, outgoing flag values, remote-shell arguments, uploaded files).
+It never judges local work. The wall for Bash as a whole is Claude Code sandbox (settings: sandbox.enabled plus
+network.allowedDomains); identifiers assembled at run time are outside what a text check can see, by design.
 Exit 0 = allow, exit 2 = block (stderr = one line, an action).
 """
 import base64
@@ -196,54 +195,12 @@ MISSING = ("<missing>",)  # read_local: a referenced file that does not exist or
 # A web-search provider sends the query to an outside search engine, so its strings count like a fetch.
 # shortcut: a name list plus a "web" word in the tool name; add a provider here when a new one appears.
 URL_KEY_RX = re.compile(r"^(?:url|uri|href|link|address|host|hostname|domain|endpoint|target)s?$", re.I)
+LOCAL_PATH_RX = re.compile(r"(?:/Users/|/home/|~/|\./|\.\./)")
 ADDR_RX = re.compile(r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?![\w.])|\[[0-9a-f:]+\]|(?:^|\s)//[\w.-]+|[\w.-]+\.[a-z]{2,}:\d{2,5}\b", re.I)
+FILE_PART_RX = re.compile(r"((?:^|=)[@<])((?:/Users/|/home/|~/|\./|\.\./)[^;]*)")
 URL_ANY_RX = re.compile(r"https?://", re.I)
 HOSTLIKE_RX = re.compile(r"(?:[\w-]+\.)+[a-z]{2,}(?::\d+)?(?:[/?#]|$)", re.I)  # a string that starts with a host: evil.example/x
 SEARCH_SERVER_RX = re.compile(r"brave|tavily|exa|perplexity|duckduckgo|ddg|serp|searx|bing|kagi|you-?com|firecrawl|jina|google[-_]?search|web[-_]?search", re.I)
-CODE_LOAD_RX = re.compile(r"^(?:-m|-r|-d|--require|--import|--loader|--experimental-loader|--preload|-M|--eval|-e|-E|-c|-p|--print)(?:=|$|\S)")
-CODE_ENV_RX = re.compile(r"\b(?:NODE_OPTIONS|NODE_PATH|PERL5OPT|PERL5LIB|PERL5DB|PERLLIB|RUBYOPT|RUBYLIB|PYTHONSTARTUP|PYTHONPATH|PYTHONHOME"
-                         r"|PYTHONWARNINGS|BASH_ENV|ENV|LD_PRELOAD|LD_LIBRARY_PATH|DYLD_INSERT_LIBRARIES|DYLD_LIBRARY_PATH)\s*\+?=|(?i:data:)[\w/+.-]*[;,]")
-SCRIPT_FILE_RX = re.compile(r"^[^-<][^\s]*\.(?:py|js|mjs|cjs|ts|rb|php|pl)$")
-INTERP_RX = re.compile(r"(?<![\w.-])(?:\S*/)?(perl|ruby|php|python[\d.]*|node|deno|bun|tsx|ts-node)(?![\w.-])([^|;&`)\n]*)", re.I)
-OPT_WITH_VALUE = {"-W", "-X", "-I"}  # options that take a harmless value (warnings, -X flags, include dirs)
-CODE_LOAD_RX = re.compile(r"^(?:-m|-r|-d|--require|--import|--loader|--experimental-loader|--preload|-M|--eval|-e|-E|-c|-p|--print)(?:=|$|\S)")
-CODE_ENV_RX = re.compile(r"\b(?:NODE_OPTIONS|NODE_PATH|PERL5OPT|PERL5LIB|PERL5DB|PERLLIB|RUBYOPT|RUBYLIB|PYTHONSTARTUP|PYTHONPATH|PYTHONHOME"
-                         r"|PYTHONWARNINGS|BASH_ENV|ENV|LD_PRELOAD|LD_LIBRARY_PATH|DYLD_INSERT_LIBRARIES|DYLD_LIBRARY_PATH)\s*\+?=|(?i:data:)[\w/+.-]*[;,]")
-
-
-def inline_script(cmd):
-    """Fail closed: any interpreter mention counts as possibly networked, unless the FIRST positional argument it
-    runs is a script file (then that script is just a program; its own network words are checked as usual)."""
-    for m in INTERP_RX.finditer(cmd):
-        rest = re.split(r"[|;&`)]", m.group(2), maxsplit=1)[0]
-        if re.search(r"(?:^|\s)(?:-[a-zA-Z0-9]*[ecErp]\b|--eval|--print|eval\b)|<<|<\(|/dev/(?:stdin|fd/)", rest) or CODE_ENV_RX.search(cmd):
-            return True
-        try:
-            toks = shlex.split(rest)
-        except ValueError:
-            return True
-        first, skip = None, False
-        for t in toks:
-            if skip:
-                skip = False
-                if not t.startswith("-"):
-                    continue  # the value of the previous option; anything option-shaped is still checked below
-            if t in OPT_WITH_VALUE:
-                skip = True
-                continue
-            if CODE_LOAD_RX.match(t):
-                return True  # loads a module or inline code rather than a named script file: fail closed
-            if t.startswith("-") and t != "-":
-                continue
-            first = t
-            break
-        if first is None or first == "-" or not SCRIPT_FILE_RX.match(first):
-            return True
-    return False
-
-
-LOCAL_PATH_RX = re.compile(r"(?:/Users/|/home/|~/|\./|\.\./)")
-FILE_PART_RX = re.compile(r"((?:^|=)[@<])((?:/Users/|/home/|~/|\./|\.\./)[^;]*)")
 
 
 def strip_local_args(cmd, home=""):
@@ -270,7 +227,8 @@ def strip_local_args(cmd, home=""):
             # to a remote shell, is outgoing and keeps the check
             remote = any(os.path.basename(x) in ("ssh", "scp", "sftp", "rsync") for x in flat[:len(keep)])
             outgoing = remote or "://" in t or URL_ANY_RX.search(t) or ADDR_RX.search(t) or HOSTLIKE_RX.match(t)
-            keep.append(t if outgoing else mask_home(t, home, ENCODED_HOME))
+            local_refs_removed = FILE_PART_RX.sub(lambda m: m.group(1) + " ", t)
+            keep.append(t if outgoing else mask_home(local_refs_removed, home, ENCODED_HOME))
         prev = t
     return "\n".join(keep)
 
@@ -394,6 +352,68 @@ def copy_sources(cmd, base=None):
     return out
 
 
+REMOTE_OPTION_VALUES = {"-b", "-c", "-D", "-E", "-F", "-i", "-J", "-L", "-l", "-m", "-O", "-o",
+                        "-p", "-R", "-S", "-W", "-w", "--config", "--port", "--rsh", "--rsync-path"}
+REMOTE_EXES = ("ssh", "scp", "sftp", "rsync")
+HTTP_URL_RX = re.compile(r"https?://[^\s'\"]+", re.I)
+
+
+def outgoing_flag_values(cmd):
+    """Literal values of flags whose contents leave the computer, plus a visible producer piped to an @- upload."""
+    out = []
+    for part in re.split(r"&&|\|\||[;|\n]", cmd):
+        try:
+            toks = shlex.split(part)
+        except ValueError:
+            toks = part.split()
+        starts = [i for i, t in enumerate(toks) if os.path.basename(t) in ("curl", "wget", "http", "https")]
+        if not starts:
+            continue
+        toks = toks[starts[0]:]
+        for i, t in enumerate(toks):
+            if t in EGRESS_FLAGS and i + 1 < len(toks):
+                out.append(toks[i + 1])
+            elif t.startswith("--") and "=" in t and t.split("=", 1)[0] in EGRESS_FLAGS:
+                out.append(t.split("=", 1)[1])
+            elif len(t) > 2 and t[:2] in {"-d", "-H", "-F", "-u", "-A", "-e", "-b", "-X", "-x"}:
+                out.append(t[2:])
+    if STDIN_UPLOAD_RX.search(cmd):
+        before = cmd.rsplit("|", 1)[0] if "|" in cmd else ""
+        if before:
+            out.append(before)
+    return out
+
+
+def remote_arguments(cmd):
+    """Host/destination and remote-command arguments for ssh, scp, sftp and rsync."""
+    try:
+        toks = shlex.split(cmd)
+    except ValueError:
+        toks = cmd.split()
+    out = []
+    for i, t in enumerate(toks):
+        if os.path.basename(t) not in REMOTE_EXES:
+            continue
+        exe, positional, skip = os.path.basename(t), [], False
+        for a in toks[i + 1:]:
+            if a in ("|", ";", "&&", "||"):
+                break
+            if skip:
+                skip = False
+                continue
+            if a in REMOTE_OPTION_VALUES:
+                skip = True
+                continue
+            if a.startswith("-"):
+                continue
+            positional.append(a)
+        if exe in ("ssh", "sftp") and positional:
+            out.extend(positional)
+        else:
+            out.extend(a for a in positional if (":" in a or "@" in a) and not re.match(r"^[A-Za-z]:[\\/]", a))
+    return out
+
+
 def read_local(path):
     """Chunks (with overlap) of a local file's text; None when it is too large to inspect."""
     p = os.path.expanduser(path)
@@ -487,10 +507,11 @@ def outgoing_segments(tool, ti):
         cmd = ti.get("command") or ""
         # quotes and backslashes removed too, so a split word (s''sh, "cu"rl) is still seen as the command it runs
         flat = re.sub(r"[\'\"\\]", "", cmd)
-        if not (NET_RX.search(cmd) or NET_RX.search(flat) or inline_script(cmd) or inline_script(flat)):
+        if not (NET_RX.search(cmd) or NET_RX.search(flat)):
             return None
-        # Data piped in on stdin cannot be read here, so the whole command text counts as outgoing (no path stripping).
-        segs = [(cmd, not STDIN_UPLOAD_RX.search(cmd))]
+        segs = [(u, False) for u in HTTP_URL_RX.findall(cmd)]
+        segs += [(v, True) for v in outgoing_flag_values(cmd)]
+        segs += [(v, False) for v in remote_arguments(cmd)]
         # curl, scp and friends resolve relative paths against where they run; a leading `cd DIR &&` moves that
         base = None
         m = re.match(r"\s*cd\s+(?:--\s+)?([\"']?)([^\"';&|]+)\1\s*(?:&&|;)", cmd)
@@ -514,7 +535,7 @@ def outgoing_segments(tool, ti):
                 for c in chunks:
                     refs += [x if not base or os.path.isabs(os.path.expanduser(x)) else os.path.join(base, x)
                              for x in (m.group(1) for m in CONFIG_REF_RX.finditer(c))]
-        return segs
+        return segs or None
     if tool == "WebFetch":
         return [(ti.get("url") or "", False)]
     if tool == "WebSearch":

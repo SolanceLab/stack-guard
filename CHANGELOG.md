@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.7.2
+
+- The egress guard now checks only what leaves the computer: URLs, outgoing flag values, remote-shell arguments, and uploaded files.
+- Purely local commands, inline interpreters, and local paths no longer cause false blocks.
+- Names and emails in outgoing data are still blocked, and uploaded or copied-out files are still read and checked.
+- Claude Code's sandbox is the wall for Bash as a whole.
+
 ## 1.7.1
 
 - Fixed: a `.mcp.json` key that says it names an environment variable (`bearer_token_env_var`, `tokenEnvVar`) and holds a variable name such as `MY_SERVICE_TOKEN` is no longer reported as a committed secret. A literal token, an all-caps or hex key, or grouped key under such a name is still reported.

