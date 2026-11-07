@@ -6,6 +6,7 @@
 - Purely local commands, inline interpreters, and local paths no longer cause false blocks.
 - Names and emails in outgoing data are still blocked, and uploaded or copied-out files are still read and checked.
 - Claude Code's sandbox is the wall for Bash as a whole.
+- The check no longer blocks local work; its known limits are listed in the README.
 
 ## 1.7.1
 

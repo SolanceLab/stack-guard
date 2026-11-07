@@ -19,3 +19,5 @@ Every security fix, by version, in plain words.
 ## Known limits
 
 - The secret guard reads the text of a shell command. A file name built while the command runs (for example from `printf` or another program's output) cannot be seen, so the guard is not the only wall: Claude Code's sandbox (`/sandbox`) and file permissions are the others.
+- The egress guard cannot see a network tool hidden behind a wrapper such as `env`, `command`, `sudo`, `nice` or `timeout`.
+- The egress guard cannot see `rsync` transport options (`-e`, `--rsh`, `--rsync-path`).

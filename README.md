@@ -167,7 +167,19 @@ What it checks: `WebFetch` addresses, `WebSearch` queries, shell commands that u
 
 Settings: turn it off with `egress_guard`; list your own trusted MCP servers in `egress_exempt_servers`.
 
-Limits: it reads text. A file name built while the command runs (for example from `printf` or another program's output) cannot be seen, because the guard reads the command's text, not what it turns into; the guard is not the only wall. An identifier that is built while the command runs (from variables or command substitution) and whole folders copied with `rsync` are outside what it can see. Claude Code's sandbox (`/sandbox`) is the wall for those. Prompted by a community discussion of agents leaking user details in request headers.
+### Known limits of the command-text check
+
+The check covers the common outgoing shapes: URLs in network commands; data and header flag values; `ssh`, `scp`, `sftp` and `rsync` user, host and identity options; uploads; and data piped into `curl`, `wget` or `nc`. It cannot see a network tool hidden behind a wrapper such as `env nc`, `command nc`, `sudo`, `nice` or `timeout`. It also cannot see `rsync` transport options (`-e`, `--rsh`, `--rsync-path`) or identifiers assembled while the command runs.
+
+Claude Code's own sandbox is the wall for all of those. In `~/.claude/settings.json`, turn it on and allow only the network domains your work needs:
+
+```json
+"sandbox": { "enabled": true,
+  "network": { "allowedDomains": ["example.com"] }
+}
+```
+
+Prompted by a community discussion of agents leaking user details in request headers.
 
 ## What leaves your computer
 
