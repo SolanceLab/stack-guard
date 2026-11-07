@@ -352,11 +352,13 @@ def copy_sources(cmd, base=None):
     return out
 
 
+REMOTE_OUTGOING_OPTIONS = {"-J", "-l"}
 REMOTE_OPTION_VALUES = {"-b", "-c", "-D", "-E", "-F", "-i", "-J", "-L", "-l", "-m", "-O", "-o",
                         "-p", "-R", "-S", "-W", "-w", "--config", "--port", "--rsh", "--rsync-path"}
 REMOTE_EXES = ("ssh", "scp", "sftp", "rsync")
 HTTP_URL_RX = re.compile(r"https?://[^\s'\"]+", re.I)
 PIPE_SINK_EXES = {"curl", "wget", "nc", "ncat", "netcat", "socat"}
+REMOTE_OUTGOING_O_KEYS = {"hostname", "proxycommand", "user"}
 
 
 def shell_pipeline_groups(cmd):
@@ -417,11 +419,18 @@ def outgoing_flag_values(cmd):
 
     out = []
     for pipe in shell_pipeline_groups(cmd):
-        for pipe_i, part in enumerate(pipe):
+        network_parts = []
+        tokenized = []
+        for part in pipe:
             try:
                 toks = shlex.split(part)
             except ValueError:
                 toks = part.split()
+            tokenized.append(toks)
+            # A URL literal is data, not proof that the command carrying it performs network I/O.
+            network_parts.append(bool(NET_RX.search(HTTP_URL_RX.sub("", part))))
+        for pipe_i, part in enumerate(pipe):
+            toks = tokenized[pipe_i]
             starts = [i for i, t in enumerate(toks)
                       if os.path.basename(t) in ("curl", "wget", "http", "https")]
             if starts:
@@ -440,8 +449,11 @@ def outgoing_flag_values(cmd):
                         value = literal(t[:2], t[2:])
                         if value is not None:
                             out.append(value)
-            if pipe_i and any(os.path.basename(t) in PIPE_SINK_EXES for t in toks):
+            command = os.path.basename(toks[0]) if toks else ""
+            if pipe_i and command in PIPE_SINK_EXES:
                 out.extend(p.strip() for p in pipe[:pipe_i] if p.strip())
+            if network_parts[pipe_i] or any(network_parts[pipe_i + 1:]):
+                out.extend(HTTP_URL_RX.findall(part))
     return out
 
 
@@ -456,14 +468,31 @@ def remote_arguments(cmd):
         if os.path.basename(t) not in REMOTE_EXES:
             continue
         exe, positional, skip = os.path.basename(t), [], False
-        for a in toks[i + 1:]:
+        args = toks[i + 1:]
+        for j, a in enumerate(args):
             if a in ("|", ";", "&&", "||"):
                 break
             if skip:
                 skip = False
                 continue
             if a in REMOTE_OPTION_VALUES:
+                value = args[j + 1] if j + 1 < len(args) else ""
+                if a in REMOTE_OUTGOING_OPTIONS:
+                    out.append(value)
+                elif a == "-o" and "=" in value and value.split("=", 1)[0].lower() in REMOTE_OUTGOING_O_KEYS:
+                    out.append(value.split("=", 1)[1])
                 skip = True
+                continue
+            if a.startswith("-l") and len(a) > 2:
+                out.append(a[2:])
+                continue
+            if a.startswith("-J") and len(a) > 2:
+                out.append(a[2:])
+                continue
+            if a.startswith("-o") and "=" in a[2:]:
+                key, value = a[2:].split("=", 1)
+                if key.lower() in REMOTE_OUTGOING_O_KEYS:
+                    out.append(value)
                 continue
             if a.startswith("-"):
                 continue
@@ -570,7 +599,7 @@ def outgoing_segments(tool, ti):
         flat = re.sub(r"[\'\"\\]", "", cmd)
         if not (NET_RX.search(cmd) or NET_RX.search(flat)):
             return None
-        segs = [(u, False) for u in HTTP_URL_RX.findall(cmd)]
+        segs = []
         # These strings are data leaving the machine, never local command arguments. In particular, do not
         # apply the local-path exemption to an outgoing flag value or to a producer piped into a network client.
         segs += [(v, False) for v in outgoing_flag_values(cmd)]
