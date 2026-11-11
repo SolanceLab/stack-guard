@@ -606,7 +606,7 @@ class WatchTests(Base):
         self.assertIn(b"<integer>30</integer>", mac["content"])
         self.assertIn("--notify", mac["show"])
         lin = sg.watch_plan("linux", self.folder, "07:30")
-        self.assertTrue(lin["line"].startswith("30 7 * * * "))
+        self.assertTrue(lin["line"].startswith("30 * * * * "))
         win = sg.watch_plan("windows", self.folder, "07:30")
         self.assertIn("/ST", win["install"][0])
         with self.assertRaises(ValueError):

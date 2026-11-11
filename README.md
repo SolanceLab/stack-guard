@@ -41,7 +41,7 @@ Already installed an earlier version? Update, then restart your tool:
 - Claude Code (terminal): `claude plugin marketplace update stack-guard` then `claude plugin update stack-guard@stack-guard`
 - Codex: `codex plugin marketplace upgrade stack-guard` then `codex plugin add stack-guard@stack-guard`
 
-Using the daily watch? Run `/stack-guard:watch` once more after updating: the morning routine runs its own copy of the script (in `~/.config/stack-guard/bin/`, so an update can never break it silently), and this refreshes that copy. Each morning's run is logged in `~/.config/stack-guard/logs/`.
+Using the daily watch? Run `/stack-guard:watch` once more after updating: the morning routine runs its own copy of the script (in `~/.config/stack-guard/bin/`, so an update can never break it silently), and this refreshes that copy. Each morning's run is logged in `~/.config/stack-guard/logs/`. Set the watch up before 1.8.1? Running `/stack-guard:watch` once more also makes it catch up after a missed morning (Mac and Linux).
 
 ## Use
 
@@ -62,7 +62,7 @@ You can also just say: *"check my stack for security problems"*.
 **Two more commands:**
 
 - `/stack-guard:inventory` runs the script to write `STACK-INVENTORY.md`: a plain list of every project, where it's deployed, its runtime, package counts and MCP servers, with anything it couldn't place flagged at the top. Keep it (it describes your setup, so review it before committing it anywhere public). When the next security alert lands, you'll know in seconds whether it touches you.
-- `/stack-guard:watch` sets up a **daily routine on your own computer** (launchd on Mac, cron on Linux, Task Scheduler on Windows). It shows you the exact entry and asks before adding it. Each morning the script checks everything on the list, a **news scout agent** reads the last 14 days of security news for your versions, and an **explainer agent** writes what's new in plain words. You get **only what changed since yesterday**: a desktop notification, a report in `.stack-guard/reports/`, and optionally a Discord or Slack webhook. `/stack-guard:watch --off` removes it.
+- `/stack-guard:watch` sets up a **daily routine on your own computer** (launchd on Mac, cron on Linux, Task Scheduler on Windows). It shows you the exact entry and asks before adding it. Each morning the script checks everything on the list, a **news scout agent** reads the last 14 days of security news for your versions, and an **explainer agent** writes what's new in plain words. You get **only what changed since yesterday**: a desktop notification, a report in `.stack-guard/reports/`, and optionally a Discord or Slack webhook. On Mac and Linux, a check missed because the computer was off or asleep runs at the next start, login or wake (on Linux within the hour; the cron entry starts every hour and stops at once unless a check is due). On Windows, a check missed while the computer was off is not caught up yet. `/stack-guard:watch --off` removes it.
 
 ## Settings
 
@@ -163,7 +163,7 @@ Thanks to Aya ([@ayakohi](https://github.com/ayakohi)), whose question started i
 - Runtime names and versions: to endoflife.date. Service names, paths and ports never leave your computer; only a service runtime's or virtualenv package's public name and version go to OSV, and the webhook says only how many new services appeared.
 - After an install, the fixer's `lock-check` sends the public names and versions an install added to OSV and the npm or PyPI registry (release dates); private names are counted, not sent.
 - Once a day, one request to raw.githubusercontent.com for this plugin's version number, to tell you when a newer stack-guard is out: at the start of a Claude Code session (one line in your terminal), in `/stack-guard`, and in the daily watch. Nothing about you or your projects is sent. Turn it off with the `update_check` setting (see [Settings](#settings)) or the environment variable `PLUGIN_UPDATE_CHECK=0`.
-- Daily watch agents (when on): public package and runtime names and versions go to your own Claude Code or Codex account, and the news scout runs web searches with those generic names. The news scout agent is web-only and the explainer agent is tool-less (no file access, no shell) in both Claude and Codex. Turn them off with `--no-agents`.
+- Daily watch agents (when on): public package and runtime names and versions go to your own Claude Code or Codex account, and the news scout runs web searches with those generic names. The news scout agent is web-only and the explainer agent is tool-less (no file access, no shell) in both Claude and Codex. The explainer also receives each new finding's public advisory id and short summary from OSV. Turn them off with `--no-agents`.
 - Webhook (only if you set one): a short summary of new findings (package names, versions, severities, counts) to the Discord or Slack channel you chose.
 - "Was I hit?": the breach checker fetches advisory pages (public URLs only). It sends no project data to them.
 - Secrets committed to git are local facts: they are never sent to OSV, and a webhook says only "N secret file(s) committed to git", with no file names.

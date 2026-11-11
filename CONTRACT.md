@@ -16,7 +16,7 @@
 |---|---|
 | `.stack-guard/` in the scanned folder | Dated reports and the inventory copy; ignores itself in git |
 | `STACK-INVENTORY.md` | The plain list written by the inventory command |
-| `~/.config/stack-guard/` | The daily routine's own copy of the script and its settings |
+| `~/.config/stack-guard/` | The daily routine's own copy of the script, its settings and the time of its last run |
 | `plugins/stack-guard/.claude-plugin/plugin.json` | A version-only file kept for copies installed before 1.7.0, which look for updates at that path. Update it with every release |
 
 ## Settings and secrets it needs

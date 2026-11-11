@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.8.1
+
+- The daily watch now catches up after a missed run on Mac and Linux: a check missed because the computer was off or asleep runs at the next start, login or wake (on Linux within the hour; the cron entry starts every hour and stops at once unless a check is due). Run `/stack-guard:watch` once more to get this; until then the report says so in one line. On Windows a check missed while the computer was off is not caught up yet.
+- "What this means" no longer calls a package internet-facing because its project holds a deploy config, and the explainer now gets each finding's public advisory id and summary, so it can say what the flaw is.
+- A variable name that holds an acronym (`NOTEBOOK_MCP_KEY`, `SSH_KEY_PATH`, `HTTP_TOKEN`) is no longer reported as a committed secret.
+
 ## 1.8.0
 
 - Removed the egress guard and its two settings. It blocked legitimate work, including people's own tools, and a check on command text cannot do this job well.
