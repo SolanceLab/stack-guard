@@ -388,7 +388,7 @@ class WebhookTests(Base):
             code, out = self.run_main("check", self.folder, "--notify")
         self.assertEqual(post.call_args.args[0], HOOK)
         payload = post.call_args.args[1]
-        self.assertEqual(list(payload), ["content"])
+        self.assertEqual(list(payload), ["content", "allowed_mentions"])
         self.assertLessEqual(len(payload["content"]), 1900)
         self.assertNotIn(self.tmp, payload["content"])  # no local paths
         self.assertNotIn("TOPSECRET", out)
