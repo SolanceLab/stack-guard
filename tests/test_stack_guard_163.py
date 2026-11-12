@@ -177,7 +177,7 @@ class ServiceInventory(ServiceFixture):
         inv = self.scan()
         rt = [r for r in inv["runtimes"] if r["name"] == "postgres"]
         self.assertEqual(rt[0]["version"], "14.11")
-        with mock.patch.object(sg, "http_json", lambda url, body=None, timeout=30: [{"cycle": "14", "eol": "2026-11-12", "latest": "14.13"}]):
+        with mock.patch.object(sg, "http_json", lambda url, body=None, timeout=30: [{"cycle": "14", "eol": "2099-11-12", "latest": "14.13"}]):
             sg.eol_check(rt, [])
         self.assertEqual(rt[0]["status"], "supported")
 
