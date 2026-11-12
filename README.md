@@ -2,6 +2,55 @@
 
 Made by House of Solance · free for noncommercial use · credit required
 
+stack-guard checks everything you build and run for known security holes, tells you in plain words, and fixes the safe ones once you say yes.
+
+<div align="center">
+
+🛡️
+
+***Your setup is yours alone.** A Python script here. A Discord bot there. A site on Vercel. A little server you forgot to shut down. All of it runs on code other people wrote, and any of it can have a hole.*
+
+*The fixes get published. But there's no recall: nobody tells the people running the broken version.*
+
+***stack-guard sends you that alert.** It finds everything you run, even what you forgot. It watches every warning and every patch for all of it. When one is yours, it tells you plainly, plans the fix, and does it safely once you say yes.*
+
+</div>
+
+<p align="center"><img src="docs/how-it-works.svg" width="900" alt="Everything you have built is combed through by plain code into a list of services. A database check (plain code) and a news scout (AI, headless, web search only) check that list. An AI with no tools explains what it found in plain words, with a plan. After your yes, an AI fixer fixes and tests it, and puts it back if it breaks."></p>
+
+## Quick start
+
+**Let your AI do it.** Copy this and send it to Claude Code:
+
+```
+Please install stack-guard for me. Run:
+claude plugin marketplace add SolanceLab/plugins
+claude plugin install stack-guard@solancelab
+Then guide me through the rest, step by step.
+```
+
+Using Codex? Send the same message with `codex plugin marketplace add SolanceLab/plugins` and `codex plugin add stack-guard@solancelab`.
+
+**Or do it yourself.**
+
+- **Claude Code:**
+
+  ```
+  claude plugin marketplace add SolanceLab/plugins
+  claude plugin install stack-guard@solancelab
+  ```
+
+- **Codex:**
+
+  ```
+  codex plugin marketplace add SolanceLab/plugins
+  codex plugin add stack-guard@solancelab
+  ```
+
+  Start a new Codex conversation, then type `$stack-guard:run-stack-guard audit this folder`, or just ask: *"run stack-guard on this folder"* (add *"audit only"* to change none of your code or packages). Codex has no slash commands for plugins, so the `run-stack-guard` skill is the entry point; it does the same audit, news check and safe fixes.
+
+Installed it earlier from `SolanceLab/stack-guard`? That still works. If you move to the store above and use the daily watch, run `/stack-guard:watch` once more afterwards so the morning routine follows the new install.
+
 ## What it is
 
 **One prompt to check everything you build and run with Claude Code or Codex for known security holes, and fix the safe ones.**
@@ -12,34 +61,16 @@ Supply-chain attacks and urgent security releases are landing every week (hijack
 
 Claude Code or Codex. Node/npm for JavaScript projects. For Python, [`uv`](https://docs.astral.sh/uv/) (or `pipx`) makes the check faster; without it, stack-guard makes a throwaway environment and deletes it afterwards.
 
-## Install
-
-In Claude Code:
-
-```
-/plugin marketplace add SolanceLab/stack-guard
-/plugin install stack-guard@stack-guard
-```
-
-### Codex users
-
-```
-codex plugin marketplace add SolanceLab/stack-guard
-codex plugin add stack-guard@stack-guard
-```
-
-Start a new Codex conversation, then type `$stack-guard:run-stack-guard audit this folder`, or just ask: *"run stack-guard on this folder"* (add *"audit only"* to change none of your code or packages). Codex has no slash commands for plugins, so the `run-stack-guard` skill is the entry point; it does the same audit, news check and safe fixes.
-
 ## Update
 
-**Turn on auto-update once (Claude Code):** `/plugin` → **Marketplaces** tab → **stack-guard** → **Enable auto-update**. Claude Code then installs new versions by itself a few minutes into a session and shows "Plugin updated: stack-guard · Run /reload-plugins to apply". (It is off by default for every marketplace that is not Anthropic's own.)
+**Turn on auto-update once (Claude Code):** `/plugin` → **Marketplaces** tab → **solancelab** → **Enable auto-update**. Claude Code then installs new versions by itself a few minutes into a session and shows "Plugin updated: stack-guard · Run /reload-plugins to apply". (It is off by default for every marketplace that is not Anthropic's own.)
 
 Or update by hand:
 
 Already installed an earlier version? Update, then restart your tool:
 
-- Claude Code (terminal): `claude plugin marketplace update stack-guard` then `claude plugin update stack-guard@stack-guard`
-- Codex: `codex plugin marketplace upgrade stack-guard` then `codex plugin add stack-guard@stack-guard`
+- Claude Code (terminal): `claude plugin marketplace update solancelab` then `claude plugin update stack-guard@solancelab`
+- Codex: `codex plugin marketplace upgrade solancelab` then `codex plugin add stack-guard@solancelab`
 
 Using the daily watch? Run `/stack-guard:watch` once more after updating: the morning routine runs its own copy of the script (in `~/.config/stack-guard/bin/`, so an update can never break it silently), and this refreshes that copy. Each morning's run is logged in `~/.config/stack-guard/logs/`. Set the watch up before 1.8.1? Running `/stack-guard:watch` once more also makes it catch up after a missed morning (Mac and Linux).
 
@@ -66,7 +97,7 @@ You can also just say: *"check my stack for security problems"*.
 
 ## Settings
 
-Four settings (three switches, all on by default, and the fix release age of 48 hours). Change them when you install (`/plugin`), later with `/plugin configure stack-guard@stack-guard` or `/config`, or from a terminal install: `claude plugin install stack-guard@stack-guard --config reply_check=false`.
+Four settings (three switches, all on by default, and the fix release age of 48 hours). Change them when you install (`/plugin`), later with `/plugin configure stack-guard@solancelab` or `/config`, or from a terminal install: `claude plugin install stack-guard@solancelab --config reply_check=false`.
 
 | Setting | What turning it off means |
 | --- | --- |

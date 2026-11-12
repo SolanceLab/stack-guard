@@ -1,0 +1,120 @@
+<svg xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="t d" viewBox="0 0 980 620" width="980" height="620" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif">
+  <title id="t">How stack-guard works</title>
+  <desc id="d">Everything you have built is combed through by plain code into a list of services. A plain-code database check and a headless AI news scout (web search only) check that list. A headless AI with no tools explains what it found in plain words, with a plan. After your yes, an AI fixer fixes and tests it, and puts it back if it breaks. Then round again, every morning or whenever you ask.</desc>
+  <style>
+    .frame{fill:#f6f8fa;stroke:#8c959f;stroke-width:1.5;stroke-dasharray:6 5}
+    .agent{fill:#ffffff;stroke:#1f2328;stroke-width:1.5}
+    .t{font-size:15px;font-weight:600;fill:#1f2328}
+    .s{font-size:12px;fill:#59636e}
+    .c{font-size:11px;fill:#1f2328}
+    .chip{fill:#ffffff;stroke:#afb8c1;stroke-width:1.1}
+    .item{fill:#ffffff;stroke:#afb8c1;stroke-width:1.2}
+    .hit{fill:#ffebe9;stroke:#cf222e;stroke-width:1.5}
+    .w{font-size:12px;fill:#cf222e}
+    .a{stroke:#59636e;stroke-width:2;fill:none}
+    .h{fill:#59636e}
+    .msg{fill:#fbefff;stroke:#8250df;stroke-width:1.5}
+    .yes{fill:#1f883d}
+    .globe{fill:none;stroke:#0969da;stroke-width:1.5}
+    .comb{fill:#59636e}
+    .code{fill:#ffffff;stroke:#1f2328;stroke-width:1.5}
+    .ai{fill:#fbefff;stroke:#8250df;stroke-width:1.5}
+    .badge{font-size:11px;font-weight:600}
+    .bc{fill:#59636e}.ba{fill:#8250df}
+    .lock{font-size:10.5px;fill:#8250df}
+    @media (prefers-color-scheme: dark){
+      .frame{fill:#161b22;stroke:#6e7681}
+      .agent,.code{fill:#0d1117;stroke:#e6edf3}
+      .ai,.msg{fill:#2a1640;stroke:#ab7df8}
+      .chip,.item{fill:#0d1117;stroke:#484f58}
+      .hit{fill:#3d1214;stroke:#f85149}
+      .t,.c{fill:#e6edf3}.s{fill:#9198a1}
+      .a{stroke:#9198a1}.h{fill:#9198a1}.comb{fill:#9198a1}
+      .bc{fill:#9198a1}.ba,.lock{fill:#ab7df8}
+      .yes{fill:#238636}
+    }
+  </style>
+
+  <!-- 1 pool of code, top left -->
+  <rect class="frame" x="30" y="30" width="300" height="220" rx="14"/>
+  <text class="t" x="50" y="60">Everything you've built</text>
+  <g>
+    <rect class="chip" x="50"  y="76"  width="70" height="24" rx="4"/><text class="c" x="85"  y="92" text-anchor="middle">bot.py</text>
+    <rect class="chip" x="128" y="80"  width="86" height="24" rx="4"/><text class="c" x="171" y="96" text-anchor="middle">package.json</text>
+    <rect class="chip" x="222" y="74"  width="88" height="24" rx="4"/><text class="c" x="266" y="90" text-anchor="middle">Dockerfile</text>
+    <rect class="chip" x="58"  y="112" width="96" height="24" rx="4"/><text class="c" x="106" y="128" text-anchor="middle">vercel.json</text>
+    <rect class="chip" x="162" y="116" width="74" height="24" rx="4"/><text class="c" x="199" y="132" text-anchor="middle">server.js</text>
+    <rect class="chip" x="244" y="110" width="66" height="24" rx="4"/><text class="c" x="277" y="126" text-anchor="middle">.mcp.json</text>
+    <rect class="chip" x="50"  y="150" width="110" height="24" rx="4"/><text class="c" x="105" y="166" text-anchor="middle">requirements.txt</text>
+    <rect class="chip" x="168" y="154" width="70" height="24" rx="4"/><text class="c" x="203" y="170" text-anchor="middle">fly.toml</text>
+    <rect class="chip" x="246" y="148" width="64" height="24" rx="4"/><text class="c" x="278" y="164" text-anchor="middle">cron job</text>
+    <rect class="chip" x="70"  y="188" width="92" height="24" rx="4"/><text class="c" x="116" y="204" text-anchor="middle">launch agent</text>
+    <rect class="chip" x="170" y="192" width="84" height="24" rx="4"/><text class="c" x="212" y="208" text-anchor="middle">Cargo.toml</text>
+  </g>
+  <text class="s" x="50" y="236">scattered across folders, months of it</text>
+
+  <!-- comb arrow to list -->
+  <g transform="translate(372,112)">
+    <rect class="comb" x="0" y="0" width="56" height="8" rx="2"/>
+    <rect class="comb" x="4"  y="8" width="3" height="14"/><rect class="comb" x="12" y="8" width="3" height="14"/>
+    <rect class="comb" x="20" y="8" width="3" height="14"/><rect class="comb" x="28" y="8" width="3" height="14"/>
+    <rect class="comb" x="36" y="8" width="3" height="14"/><rect class="comb" x="44" y="8" width="3" height="14"/>
+    <rect class="comb" x="52" y="8" width="3" height="14"/>
+  </g>
+  <line class="a" x1="340" y1="148" x2="456" y2="148"/><path class="h" d="M456 141 L468 148 L456 155 Z"/>
+  <text class="s" x="400" y="172" text-anchor="middle">combed through</text><text class="badge bc" x="400" y="190" text-anchor="middle">⚙ code</text>
+
+  <!-- 2 list of services, top right -->
+  <rect class="frame" x="474" y="30" width="250" height="220" rx="14"/>
+  <text class="t" x="494" y="60">Your list of services</text>
+  <rect class="item" x="494" y="76"  width="210" height="30" rx="6"/><text class="s" x="510" y="96">Python script</text>
+  <rect class="hit"  x="494" y="114" width="210" height="30" rx="6"/><text class="s" x="510" y="134">Discord bot</text>
+  <rect class="item" x="494" y="152" width="210" height="30" rx="6"/><text class="s" x="510" y="172">Vercel site</text>
+  <rect class="item" x="494" y="190" width="210" height="30" rx="6"/><text class="s" x="510" y="210">little server you forgot</text>
+
+  <!-- to scout -->
+
+  <!-- 3 checks, right: database (code) + news scout (AI) -->
+  <rect class="code" x="806" y="40" width="160" height="60" rx="2"/>
+  <text class="t" x="886" y="64" text-anchor="middle">Database check</text>
+  <text class="s" x="886" y="82" text-anchor="middle">known holes, package by package</text>
+  <text class="badge bc" x="886" y="116" text-anchor="middle">⚙ plain code · no AI</text>
+  <rect class="ai" x="806" y="180" width="160" height="60" rx="14"/>
+  <text class="t" x="886" y="204" text-anchor="middle">News scout</text>
+  <text class="s" x="886" y="222" text-anchor="middle">14 days of security news</text>
+  <text class="badge ba" x="958" y="194" text-anchor="end">✦ AI</text>
+  <text class="lock" x="886" y="256" text-anchor="middle">headless · web search only</text>
+  <path class="a" d="M724 120 L770 120 L770 70 L794 70"/><path class="h" d="M794 63 L806 70 L794 77 Z"/>
+  <path class="a" d="M770 120 L770 210 L794 210"/><path class="h" d="M794 203 L806 210 L794 217 Z"/>
+  <path class="a" d="M966 70 L972 70 L972 300"/>
+  <path class="a" d="M966 210 L972 210"/>
+  <!-- back down: results -->
+  <path class="a" d="M972 300 L972 380 L742 380"/><path class="h" d="M742 373 L730 380 L742 387 Z"/>
+
+  <!-- 4 plain words + yes, bottom middle -->
+  <rect class="msg" x="384" y="330" width="344" height="110" rx="12"/>
+  <text class="t" x="404" y="358">In plain words</text><text class="badge ba" x="718" y="352" text-anchor="end">✦ AI</text><text class="lock" x="718" y="366" text-anchor="end">headless · no tools</text>
+  <text class="s" x="404" y="380">Your Discord bot uses a package with a known hole.</text>
+  <text class="s" x="404" y="398">Plan: update it to the fixed version.</text>
+  <rect class="yes" x="404" y="408" width="58" height="24" rx="6"/>
+  <text x="433" y="425" text-anchor="middle" font-size="13" font-weight="600" fill="#ffffff">Yes</text>
+  <text class="s" x="476" y="425">← you decide</text>
+
+  <!-- to fixer -->
+  <line class="a" x1="384" y1="385" x2="332" y2="385"/><path class="h" d="M332 378 L320 385 L332 392 Z"/>
+
+  <!-- 5 fixer + test, bottom left -->
+  <rect class="ai" x="130" y="350" width="190" height="70" rx="14"/><text class="badge ba" x="312" y="366" text-anchor="end">✦ AI</text>
+  <text class="lock" x="225" y="436" text-anchor="middle">works only after your yes · undoes if broken</text>
+  <text class="t" x="225" y="378" text-anchor="middle">Fixer</text>
+  <text class="s" x="225" y="398" text-anchor="middle">fixes, then tests it</text>
+  <text class="s" x="225" y="413" text-anchor="middle">puts it back if it breaks</text>
+
+  <!-- back up to the pool -->
+  <path class="a" d="M180 350 L180 262"/><path class="h" d="M173 262 L180 250 L187 262 Z"/>
+  <text class="s" x="190" y="300">safe again</text>
+
+  <rect class="code" x="300" y="530" width="18" height="14" rx="2"/><text class="s" x="324" y="542">⚙ plain code: no AI; only names and versions are looked up online</text>
+  <rect class="ai" x="300" y="556" width="18" height="14" rx="5"/><text class="s" x="324" y="568">✦ AI agent: reads the news, explains, fixes; only after your yes for fixes</text>
+  <text class="s" x="490" y="500" text-anchor="middle">…and round again: every morning, or whenever you ask</text>
+</svg>
