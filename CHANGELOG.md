@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.8.2
+
+- The daily watch now finds newer versions in any store's folder, so moving stack-guard to another store (for example SolanceLab/plugins) no longer stops it updating itself. You no longer need to run /stack-guard:watch again after moving stores.
+
 ## 1.8.1
 
 - The daily watch now catches up after a missed run on Mac and Linux: a check missed because the computer was off or asleep runs at the next start, login or wake (on Linux within the hour; the cron entry starts every hour and stops at once unless a check is due). Run `/stack-guard:watch` once more to get this; until then the report says so in one line. On Windows a check missed while the computer was off is not caught up yet.

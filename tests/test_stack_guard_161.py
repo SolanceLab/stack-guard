@@ -64,7 +64,8 @@ class ScriptCopyRefresh(Base):
         sg.write_file(os.path.join(os.path.dirname(copy), sg.SOURCE_NOTE), old)  # the path recorded at watch-install
         # the refresh mechanics are tested here; which folders may supply the script is tested in 1.6.2
         with mock.patch.object(sg, "__file__", copy), mock.patch.object(sg, "VERSION", "1.6.1"), \
-                mock.patch.object(sg, "trusted_plugin_script", lambda p: True), mock.patch("builtins.print") as pr:
+                mock.patch.object(sg, "trusted_plugin_script", lambda p: True), mock.patch("builtins.print") as pr, \
+                mock.patch.object(sg.os.path, "expanduser", lambda p: self.tmp if p == "~" else p):  # 1.8.2 also looks under home: keep it to the fake one
             self.assertTrue(sg.refresh_script_copy())
         self.assertEqual(sg.script_version(copy), "1.6.2")
         self.assertEqual(pr.call_count, 1)
