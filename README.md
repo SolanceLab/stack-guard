@@ -49,7 +49,7 @@ Using Codex? Send the same message with `codex plugin marketplace add SolanceLab
 
   Start a new Codex conversation, then type `$stack-guard:run-stack-guard audit this folder`, or just ask: *"run stack-guard on this folder"* (add *"audit only"* to change none of your code or packages). Codex has no slash commands for plugins, so the `run-stack-guard` skill is the entry point; it does the same audit, news check and safe fixes.
 
-Installed it earlier from `SolanceLab/stack-guard`? That still works, and the daily watch follows you if you move to the store above (from 1.8.2).
+Installed it earlier from `SolanceLab/stack-guard`? That still works, and the daily watch follows you if you move to the store above (from 1.8.2). Moved to the store above before version 1.8.2? Run `/stack-guard:watch` once, and the morning check will follow you from then on.
 
 ## What it is
 
