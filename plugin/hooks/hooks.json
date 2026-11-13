@@ -42,7 +42,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "PY=python3; [ \"$OS\" = Windows_NT ] && PY=python; command -v \"$PY\" >/dev/null 2>&1 && \"$PY\" \"${CLAUDE_PLUGIN_ROOT}/hooks/update_check.py\" https://raw.githubusercontent.com/SolanceLab/stack-guard/main/plugin/.claude-plugin/plugin.json stack-guard || true",
+            "command": "PY=python3; [ \"$OS\" = Windows_NT ] && PY=python; command -v \"$PY\" >/dev/null 2>&1 && \"$PY\" \"${CLAUDE_PLUGIN_ROOT}/hooks/update_check.py\" https://raw.githubusercontent.com/SolanceLab/stack-guard/main/plugin/.claude-plugin/plugin.json solancelab || true",
             "timeout": 10
           }
         ]

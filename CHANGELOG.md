@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.8.3
+
+- The update notice now names the store you installed stack-guard from (for most people `solancelab`), so the command it gives works: `claude plugin marketplace update solancelab` then `claude plugin update stack-guard@solancelab`.
+
 ## 1.8.2
 
 - The daily watch now finds newer versions in any store's folder, so moving stack-guard to another store (for example SolanceLab/plugins) no longer stops it updating itself. You no longer need to run /stack-guard:watch again after moving stores.

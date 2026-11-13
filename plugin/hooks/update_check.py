@@ -85,6 +85,18 @@ def read_own_plugin(script_path, env):
     return name, version
 
 
+def installed_marketplace(script_path, name, fallback):
+    """The marketplace this copy was installed from, read from its path (<...>/plugins/cache/<marketplace>/<name>/<version>/hooks/,
+    '/' or '\\' separators), else the one the hook command names."""
+    here = os.path.abspath(script_path)
+    for path in (here, os.path.realpath(here)):
+        m = re.search(r"[/\\]plugins[/\\]cache[/\\]([A-Za-z0-9][A-Za-z0-9._-]{0,63})[/\\]" + re.escape(name)
+                      + r"[/\\][^/\\]+[/\\]hooks[/\\][^/\\]+$", path)
+        if m:
+            return m.group(1)
+    return fallback
+
+
 def cache_path(name, env):
     base = env.get("CLAUDE_PLUGIN_DATA") or os.path.join(os.path.expanduser("~"), ".config", name)
     return os.path.join(base, "latest.json")
@@ -131,6 +143,7 @@ def run(argv, env, script_path, out):
         return
     url, marketplace = argv[0], argv[1]
     name, current = read_own_plugin(script_path, env)
+    marketplace = installed_marketplace(script_path, name, marketplace)
     path, now = cache_path(name, env), time.time()
     cached = load_cache(path, url, now)
     if cached is not None:
