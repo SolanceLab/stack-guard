@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.9.0
+
+- The secret guard no longer blocks commands. It guessed from the words in a command and stopped ordinary work.
+- It still hides secret-shaped values that show up in tool output and checks the final reply. Claude Code's own permission deny rules can keep its Read tool away from secret files (they do not cover shell commands); the README says how.
+
 ## 1.8.3
 
 - The update notice now names the store you installed stack-guard from (for most people `solancelab`), so the command it gives works: `claude plugin marketplace update solancelab` then `claude plugin update stack-guard@solancelab`.

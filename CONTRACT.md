@@ -8,7 +8,7 @@
 | `/stack-guard:inventory` | `STACK-INVENTORY.md`: what the user builds and runs |
 | `/stack-guard:watch` | A daily routine on the user's own computer, set up after a yes |
 | `plugin/scripts/stack_guard.py` | The same checks from a terminal: `inventory`, `check`, `lock-check`, `release-age`, `version-check` |
-| Hooks | Secret guard, daily update check (each can be switched off) |
+| Hooks | Secret guard (hides secret values in tool output and checks the final reply; blocks no commands), daily update check (each can be switched off) |
 
 ## Data it owns
 

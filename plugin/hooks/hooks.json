@@ -1,18 +1,6 @@
 {
-  "description": "stack-guard hooks: the secret guard keeps secret files and keys out of the chat; the update check says when a newer stack-guard is out.",
+  "description": "stack-guard hooks: the secret guard hides secret values that show up in tool output and checks the final reply; the update check says when a newer stack-guard is out.",
   "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Read|Grep|Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "PY=python3; [ \"$OS\" = Windows_NT ] && PY=python; \"$PY\" \"${CLAUDE_PLUGIN_ROOT}/hooks/secret_guard.py\"",
-            "timeout": 10
-          }
-        ]
-      }
-    ],
     "PostToolUse": [
       {
         "matcher": "Bash|Read|Grep",

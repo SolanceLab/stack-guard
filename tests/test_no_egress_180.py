@@ -22,7 +22,7 @@ class NoEgress180Test(unittest.TestCase):
 
     def test_other_hooks_still_wired(self):
         text = read("plugin", "hooks", "hooks.json")
-        self.assertEqual(text.count("secret_guard.py"), 3)
+        self.assertEqual(text.count("secret_guard.py"), 2)  # 1.9.0: PostToolUse + Stop (the PreToolUse command check is gone)
         self.assertEqual(text.count("update_check.py"), 1)
         json.loads(text)
 

@@ -58,6 +58,8 @@ Open Claude Code in your project folder and type `/stack-guard`. Add `--audit-on
 
 Four settings: the secret guard, the final-reply check and the daily update check (all on), and how long a fix must have been public before it is installed (48 hours). Change them with `/plugin configure stack-guard@solancelab`. Details: [Settings](docs/settings.md).
 
+The secret guard hides secret values that show up in tool output and checks the final reply; it does not block commands. To keep Claude Code's Read tool away from secret files, use its own permission deny rules, for example `"permissions": {"deny": ["Read(./.env)", "Read(./.env.*)"]}` in your settings. Those rules cover the Read tool only: a shell command such as cat or grep can still open the file, and nothing here stops that. See [Claude Code settings](https://code.claude.com/docs/en/settings).
+
 ## Tools
 
 | Tool | What it does |
@@ -67,7 +69,7 @@ Four settings: the secret guard, the final-reply check and the daily update chec
 | `/stack-guard:watch` | Sets up the daily routine on your own computer, after your yes. |
 | Skills | `stack-guard` (where to start), `run-stack-guard`, `stack-audit`, `stack-fix`, `stack-breach-check`. |
 | Agents | `stack-auditor`, `stack-news-scout`, `stack-breach-checker` (read-only) and `stack-fixer` (only after your yes). |
-| Hooks | The secret guard (three hooks) and the daily update check; each can be switched off in Settings. |
+| Hooks | The secret guard (two hooks) and the daily update check; each can be switched off in Settings. |
 
 ## Limits
 
@@ -78,7 +80,7 @@ It does not scan container images, GitHub Actions or package signatures, and it 
 - It never deploys, pushes, commits, upgrades Node/Python or restarts services on its own. It hands you the command and waits for your yes.
 - First time? [Before you run it](docs/before-you-run.md): back up, start with `--audit-only`, turn on the sandbox.
 - [Was I hit?](docs/was-i-hit.md): for each serious hole, it checks whether it could have been used against you.
-- [Secret guard](docs/secret-guard.md): while stack-guard works, it keeps secret values out of the chat in the common ways they leak. A seatbelt, not a vault.
+- [Secret guard](docs/secret-guard.md): while stack-guard works, it hides secret values that show up in tool output and checks its final reply. It does not block commands. A seatbelt, not a vault.
 - [What leaves your computer](docs/what-leaves-your-computer.md): package and runtime names and versions, and a daily version check. Never your code, keys or file paths.
 
 ## How it works

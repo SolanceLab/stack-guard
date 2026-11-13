@@ -1,6 +1,6 @@
 {
   "name": "stack-guard",
-  "version": "1.8.3",
+  "version": "1.9.0",
   "description": "One-prompt security check and safe fix for everything you build and run with Claude Code.",
   "author": {
     "name": "House of Solance"
@@ -20,14 +20,14 @@
     "secret_guard": {
       "type": "boolean",
       "title": "Secret guard",
-      "description": "Keeps secret files and keys out of the chat while stack-guard is in use (all three secret-guard hooks).",
+      "description": "Hides secret values that show up in tool output and checks the final reply while stack-guard is in use (both secret-guard hooks). It does not block commands.",
       "default": true,
       "required": false
     },
     "reply_check": {
       "type": "boolean",
       "title": "Final-reply check",
-      "description": "After each reply, checks it for secret shapes. To do that it reads the session's history on this computer; nothing leaves the computer. Turning it off keeps the other two secret-guard hooks.",
+      "description": "After each reply, checks it for secret shapes. To do that it reads the session's history on this computer; nothing leaves the computer. Turning it off keeps the output filter.",
       "default": true,
       "required": false
     },

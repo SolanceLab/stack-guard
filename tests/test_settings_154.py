@@ -78,8 +78,8 @@ class HookSettings(unittest.TestCase):
                 code = e.code or 0
         return code, out.getvalue(), err.getvalue(), reader
 
-    def test_secret_guard_off_silences_all_three_hooks_and_reads_nothing(self):
-        for argv in ([], ["--post"], ["--stop"]):
+    def test_secret_guard_off_silences_both_hooks_and_reads_nothing(self):
+        for argv in (["--post"], ["--stop"]):
             code, out, err, reader = self.run_hook(argv, {"CLAUDE_PLUGIN_OPTION_SECRET_GUARD": "false"})
             self.assertEqual((code, out, err), (0, "", ""), argv)
             reader.assert_not_called()
@@ -89,12 +89,8 @@ class HookSettings(unittest.TestCase):
         self.assertEqual((code, out, err), (0, "", ""))
         reader.assert_not_called()
 
-    def test_reply_check_off_leaves_pre_and_post_working(self):
+    def test_reply_check_off_leaves_post_working(self):
         env = dict(STACK_GUARD_ACTIVE="1", CLAUDE_PLUGIN_OPTION_REPLY_CHECK="false")
-        pre = subprocess.run([sys.executable, os.path.join(HOOKS, "secret_guard.py")], capture_output=True, text=True, env=clean_env(**env),
-                             input=json.dumps({"tool_name": "Read", "tool_input": {"file_path": "/p/.env"}}))
-        self.assertEqual(pre.returncode, 2)
-        self.assertIn("stack-guard secret guard", pre.stderr)
         token = "ghp_" + "a" * 30
         post = subprocess.run([sys.executable, os.path.join(HOOKS, "secret_guard.py"), "--post"], capture_output=True, text=True, env=clean_env(**env),
                               input=json.dumps({"tool_name": "Bash", "tool_input": {"command": "x"}, "tool_response": {"stdout": "k=" + token}}))
@@ -103,7 +99,7 @@ class HookSettings(unittest.TestCase):
 
     def test_options_on_or_missing_keep_the_hook_running(self):
         for opts in ({}, {"CLAUDE_PLUGIN_OPTION_SECRET_GUARD": "true", "CLAUDE_PLUGIN_OPTION_REPLY_CHECK": "true"}):
-            _, _, _, reader = self.run_hook([], opts)
+            _, _, _, reader = self.run_hook(["--post"], opts)
             reader.assert_called()
 
     def test_update_check_hook_off_makes_no_request(self):

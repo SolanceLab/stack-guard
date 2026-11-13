@@ -6,8 +6,8 @@ Four settings (three switches, all on by default, and the fix release age of 48 
 
 | Setting | What turning it off means |
 | --- | --- |
-| `secret_guard` ("Secret guard") | All three secret-guard hooks stop before they read anything. Nothing is blocked or redacted. |
-| `reply_check` ("Final-reply check") | Only the Stop hook stops. It is the one that reads the session's history on this computer (nothing leaves the computer) to check each reply for secret shapes. The other two secret-guard hooks keep working. |
+| `secret_guard` ("Secret guard") | Both secret-guard hooks stop before they read anything. Nothing is redacted and the final reply is not checked. |
+| `reply_check` ("Final-reply check") | Only the Stop hook stops. It is the one that reads the session's history on this computer (nothing leaves the computer) to check each reply for secret shapes. The output filter keeps working. |
 | `update_check` ("Update check") | No daily request to GitHub for the version number: not at session start, not in `/stack-guard`, not in the daily watch. `version-check` says "Update check is turned off." |
 
 | `min_release_hours` ("Fix release age (hours)") | How long a fixed version must have been public before the fixer installs it (default 48). `0` takes new versions at once. `stack_guard.py release-age <npm\|PyPI> <name> <version>` shows the verdict; it asks the registry for public package names only. |
