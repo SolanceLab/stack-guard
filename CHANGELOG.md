@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.9.1
+
+- When OSV.dev cannot be reached, the report, the notification and the terminal summary now say the packages were not checked. Before, the report printed "None" under Fix first and Also worth fixing, "No known problems" for tools and "Nothing new since the last check", which read like an all-clear when nothing had been looked up.
+- New page, docs/troubleshooting.md: how to find where the connection to OSV breaks, and how to check your packages by hand in the meantime.
+
 ## 1.9.0
 
 - The secret guard no longer blocks commands. It guessed from the words in a command and stopped ordinary work.

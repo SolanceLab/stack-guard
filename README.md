@@ -75,6 +75,8 @@ The secret guard hides secret values that show up in tool output and checks the 
 
 It does not scan container images, GitHub Actions or package signatures, and it checks only the usual secret files, not every file. macOS and Linux are fully supported; Windows is best effort. The full list: [Limits](docs/limits.md).
 
+If a report says OSV could not be reached, your packages were not checked that day: see [Troubleshooting](docs/troubleshooting.md).
+
 ## Safety
 
 - It never deploys, pushes, commits, upgrades Node/Python or restarts services on its own. It hands you the command and waits for your yes.
