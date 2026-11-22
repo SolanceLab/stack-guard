@@ -75,7 +75,7 @@ The secret guard hides secret values that show up in tool output and checks the 
 
 It does not scan container images, GitHub Actions or package signatures, and it checks only the usual secret files, not every file. macOS and Linux are fully supported; Windows is best effort. The full list: [Limits](docs/limits.md).
 
-If a report says OSV could not be reached, your packages were not checked that day: see [Troubleshooting](docs/troubleshooting.md).
+If OSV cannot be reached, stack-guard asks the npm registry and PyPI instead (and GitHub's malware records after an install) and says so in the report. Only when every source fails were your packages not checked that day: see [Troubleshooting](docs/troubleshooting.md).
 
 ## Safety
 

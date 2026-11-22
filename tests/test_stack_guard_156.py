@@ -112,28 +112,38 @@ class ReleaseAgeCli(Base):
         code, out, _ = self.run_cli("npm", "lodash", "2.0.0")
         self.assertEqual(code, 2, out)
 
+    # Since 1.10.0: a scoped name outside the known scopes may have its release
+    # age asked at registry.npmjs.org ONLY, and only when a scanned lockfile proves it was served from there.
+    def _scoped_project(self, resolved):
+        import json
+        proj = os.path.join(self.tmp, "pub")
+        os.makedirs(proj, exist_ok=True)
+        with open(os.path.join(proj, "package.json"), "w", encoding="utf-8") as fh:
+            json.dump({"dependencies": {"@acme/js": "1.0.0"}}, fh)
+        with open(os.path.join(proj, "package-lock.json"), "w", encoding="utf-8") as fh:
+            json.dump({"lockfileVersion": 3, "packages": {"node_modules/@acme/js": {"version": "1.0.0", "resolved": resolved}}}, fh)
+        return proj
+
     def test_private_npm_name_is_not_looked_up(self):
         code, out, net = self.run_cli("npm", "@scope/pkg", "1.0.0")
         self.assertEqual((code, out), (2, "unknown: private package, release date not looked up"))
         net.assert_not_called()
-        code, out, net = self.run_cli("npm", "@scope/pkg", "1.0.0", "--folder", os.path.join(self.folder, "app"))
-        self.assertEqual(code, 2)
-        net.assert_not_called()
-
-    def test_unknown_scope_stays_unlooked_even_with_registry_lockfile(self):
-        # npm private packages are scoped and resolve from registry.npmjs.org too, so a lockfile cannot prove a
-        # scoped name outside the known open-source scopes is public; the name must not leave the machine.
-        import json
-        proj = os.path.join(self.tmp, "pub")
-        os.makedirs(proj)
-        with open(os.path.join(proj, "package.json"), "w", encoding="utf-8") as fh:
-            json.dump({"dependencies": {"@acme/js": "1.0.0"}}, fh)
-        with open(os.path.join(proj, "package-lock.json"), "w", encoding="utf-8") as fh:
-            json.dump({"lockfileVersion": 3, "packages": {"node_modules/@acme/js": {
-                "version": "1.0.0", "resolved": "https://registry.npmjs.org/@acme/js/-/js-1.0.0.tgz"}}}, fh)
+        # the sample app's lockfile proves @scope/pkg came from registry.npmjs.org, so it may be asked there and nowhere else
+        _, _, net = self.run_cli("npm", "@scope/pkg", "1.0.0", "--folder", os.path.join(self.folder, "app"))
+        self.assertTrue(net.call_args_list)  # it did ask, so the check below is not empty
+        self.assertTrue(all(c.args[0].startswith("https://registry.npmjs.org/") for c in net.call_args_list))
+        proj = self._scoped_project("https://npm.corp.example/@acme/js/-/js-1.0.0.tgz")  # proof from another registry
         code, out, net = self.run_cli("npm", "@acme/js", "1.0.0", "--folder", proj)
         self.assertEqual(code, 2, out)
         net.assert_not_called()
+
+    def test_unknown_scope_with_registry_lockfile_asks_npmjs_only(self):
+        proj = self._scoped_project("https://registry.npmjs.org/@acme/js/-/js-1.0.0.tgz")
+        code, out, net = self.run_cli("npm", "@acme/js", "1.0.0", "--folder", proj)
+        self.assertEqual(code, 0, out)
+        self.assertTrue(net.call_args_list)
+        for call in net.call_args_list:
+            self.assertTrue(call.args[0].startswith("https://registry.npmjs.org/"), call.args[0])
 
     def test_private_pypi_name_is_not_looked_up(self):
         proj = os.path.join(self.tmp, "priv")

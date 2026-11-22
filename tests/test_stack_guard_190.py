@@ -111,7 +111,7 @@ class Version190(unittest.TestCase):
             return json.load(fh)
 
     def test_versions(self):
-        self.assertEqual(sg.VERSION, "1.9.1")
+        self.assertEqual(sg.VERSION, "1.10.0")
         for rel in (("plugin", ".claude-plugin", "plugin.json"), ("plugin", ".codex-plugin", "plugin.json"),
                     ("plugins", "stack-guard", ".claude-plugin", "plugin.json")):
             self.assertEqual(self.load(*rel)["version"], sg.VERSION, rel)
@@ -125,9 +125,9 @@ class Version190(unittest.TestCase):
         with open(os.path.join(ROOT, "CHANGELOG.md"), encoding="utf-8") as fh:
             text = fh.read()
         heads = list(re.finditer(r"^## .*$", text, re.M))
-        self.assertEqual(heads[1].group(), "## 1.9.0")
-        self.assertEqual(heads[2].group(), "## 1.8.3")
-        section = text[heads[1].end():heads[2].start()]
+        i = [h.group() for h in heads].index("## 1.9.0")  # newer entries may sit above it
+        self.assertEqual(heads[i + 1].group(), "## 1.8.3")
+        section = text[heads[i].end():heads[i + 1].start()]
         self.assertEqual(len([l for l in section.splitlines() if l.startswith("- ")]), 2)
 
     def test_readme_points_to_deny_rules(self):

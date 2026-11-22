@@ -461,7 +461,7 @@ class Wording(unittest.TestCase):
             self.assertNotIn("summary is quoted", text)
 
     def test_version_unchanged(self):
-        self.assertEqual(sg.VERSION, "1.9.1")
+        self.assertEqual(sg.VERSION, "1.10.0")
 
 
 if __name__ == "__main__":

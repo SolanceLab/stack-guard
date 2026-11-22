@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.10.0
+
+- When OSV.dev cannot be reached, stack-guard now asks a second layer instead of skipping the check. The daily check asks the npm registry about your npm packages and PyPI about your Python packages. The report says which source answered, and notes that Python severity shows as UNKNOWN and npm findings list no fixed version.
+- The install-time `lock-check` asks GitHub's advisory database for malware records when OSV is down. A malware record exits 4 as before; if GitHub cannot answer (offline or over its 60 an hour limit without a token), the check is still reported as not done (exit 2). Set `GITHUB_TOKEN` or `GH_TOKEN` for a higher limit.
+- When every source fails, the report says "not checked" exactly as in 1.9.1.
+- The Services section no longer reads "None need a look." when its packages were not checked: it says how many service packages were not looked up, or that OSV could not be reached. When the second layer answers for everything, nothing is reported as "not checked".
+- Docs: troubleshooting, README and what-leaves-your-computer describe the second layer and what it sends.
+- `release-age --folder` can now check npm packages in scopes it does not know (for example @vitest, @rolldown, @emnapi, @napi-rs) by asking only registry.npmjs.org, the registry your lockfile says served them, and Python packages installed in the project's own virtualenv by asking only pypi.org. `lock-check` still reports unknown-scope npm packages as not proven (exit 2), because the npm registry does not document malware records; its output now says so.
+
 ## 1.9.1
 
 - When OSV.dev cannot be reached, the report, the notification and the terminal summary now say the packages were not checked. Before, the report printed "None" under Fix first and Also worth fixing, "No known problems" for tools and "Nothing new since the last check", which read like an all-clear when nothing had been looked up.

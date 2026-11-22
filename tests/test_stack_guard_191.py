@@ -82,6 +82,7 @@ class OsvUnreachable191(unittest.TestCase):
     def test_terminal_summary_says_packages_not_checked(self):
         with tempfile.TemporaryDirectory() as folder, \
                 mock.patch.object(sg, "osv_check", return_value=None), \
+                mock.patch.object(sg, "fallback_check", return_value=None), \
                 mock.patch.object(sg, "eol_check", side_effect=lambda rts, errs: [r.update(status="unknown", update=False, latest=None) for r in rts]), \
                 mock.patch.object(sg, "update_line", return_value=""):
             out = io.StringIO()
@@ -92,7 +93,7 @@ class OsvUnreachable191(unittest.TestCase):
         self.assertIn("among what could be checked", text)
 
     def test_version(self):
-        self.assertEqual(sg.VERSION, "1.9.1")
+        self.assertEqual(sg.VERSION, "1.10.0")
 
 
 if __name__ == "__main__":
