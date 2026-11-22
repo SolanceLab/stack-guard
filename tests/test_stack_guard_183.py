@@ -173,7 +173,7 @@ class Version183(unittest.TestCase):
             return json.load(fh)
 
     def test_versions(self):
-        self.assertEqual(sg.VERSION, "1.10.0")
+        self.assertEqual(sg.VERSION, "1.10.1")
         for rel in (("plugin", ".claude-plugin", "plugin.json"), ("plugin", ".codex-plugin", "plugin.json"),
                     ("plugins", "stack-guard", ".claude-plugin", "plugin.json")):
             self.assertEqual(self.load(*rel)["version"], sg.VERSION, rel)

@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.10.1
+
+- The install-time `lock-check` now checks npm packages in scopes stack-guard does not know (for example @vitest) for malware, when registry.npmjs.org serves that exact version to a request without a login. A package the registry gives to anyone is public, so its name and version go to OSV.dev, and to GitHub's advisory database when OSV is down, like any other public package. A malware record exits 4 and a too-new release exits 3, as for other packages. If the registry serves the version but gives no publish time, the malware check still runs and the age is reported as not proven (exit 2, or 4 on a malware record).
+- That question goes only to registry.npmjs.org, with no login or token, and a redirect is refused. A package it does not serve that way (npm private packages answer 404, 401 or 403) is still counted as not proven (exit 2), never named and never sent anywhere else.
+- `release-age --folder` asks registry.npmjs.org about such names the same way: no login, no redirect followed.
+
 ## 1.10.0
 
 - When OSV.dev cannot be reached, stack-guard now asks a second layer instead of skipping the check. The daily check asks the npm registry about your npm packages and PyPI about your Python packages. The report says which source answered, and notes that Python severity shows as UNKNOWN and npm findings list no fixed version.

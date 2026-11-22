@@ -137,15 +137,20 @@ class SourceOnlyReleaseAge(Base):
 
 
 class SourceOnlyLockCheck(Base):
-    def test_unlisted_name_is_counted_not_looked_up(self):
+    def test_unlisted_name_npmjs_serves_anonymously_is_public(self):
+        def net(url, body=None, *a, **k):
+            self.calls.append((url, body))
+            return {"versions": {"2.1.8": {"name": VITEST}}, "time": {"2.1.8": stamp(self.age)}}
+        self.mocks["osv_check"].return_value = []
         after = self.lockfile(VITEST, "2.1.8", VURL, "package-lock.json")
         before = self.empty_lock("before.json")
-        code, out = self.cli("lock-check", before, after)
-        self.assertEqual(code, 2, out)
-        self.assertIn("1 private", out)
-        self.assertIn("came from registry.npmjs.org", out)
-        self.assertEqual(self.calls, [])
-        self.assert_no_second_party()
+        with mock.patch.object(sg, "http_json", net):
+            code, out = self.cli("lock-check", before, after)
+        self.assertEqual(code, 0, out)
+        self.assertTrue(any(u.startswith(NPMJS) for u, _ in self.calls))
+        self.mocks["osv_check"].assert_called_once()
+        self.assertIn(VITEST, [t["name"] for t in self.mocks["osv_check"].call_args[0][0]])
+        self.assertIn(sg.NPMJS_PUBLIC_PROOF, out)
 
     def test_invalid_version_is_not_counted_as_source_only(self):
         after = self.lockfile(VITEST, "2.1.8 bad", VURL, "package-lock.json")

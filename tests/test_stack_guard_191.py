@@ -93,7 +93,7 @@ class OsvUnreachable191(unittest.TestCase):
         self.assertIn("among what could be checked", text)
 
     def test_version(self):
-        self.assertEqual(sg.VERSION, "1.10.0")
+        self.assertEqual(sg.VERSION, "1.10.1")
 
 
 if __name__ == "__main__":
