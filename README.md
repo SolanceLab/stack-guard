@@ -26,7 +26,7 @@ stack-guard checks everything you build and run for known security holes, tells 
 
 <table>
 <tr>
-<td width="42%"><img src="docs/card.jpg" width="100%" alt="A quiet street at evening, every window dark except one house with a lit front door. A figure of light, with no face, hands a single sealed letter with a gold seal to that door while the neighbouring houses sleep."></td>
+<td width="42%"><img src="docs/card.jpg" width="100%" alt="A small futuristic city of server towers and glowing data blocks at night under a dome of gold circuit lines, with signal lines running from every building to a guardian made of light on a tall tower; the moon on one side and the dawn on the other."></td>
 <td>
 
 🛡️ ***Your setup is yours alone.** A Python script here. A Discord bot there. A site on Vercel. A little server you forgot to shut down. All of it runs on code other people wrote, and any of it can have a hole.*
