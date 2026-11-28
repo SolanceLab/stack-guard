@@ -1,22 +1,47 @@
-# stack-guard
+<div align="center">
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/banner-dark.svg">
+  <img src="docs/banner-light.svg" width="100%" alt="stack-guard: your security alert, in plain words. Find, check, explain, fix.">
+</picture>
+
+[Quick start](#quick-start) • [What's inside](#what-it-is) • [Support us](https://ko-fi.com/houseofsolance)
+
+[![Tests](https://img.shields.io/github/actions/workflow/status/SolanceLab/stack-guard/test.yml?branch=main&label=tests)](https://github.com/SolanceLab/stack-guard/actions/workflows/test.yml)
+[![Release](https://img.shields.io/github/v/release/SolanceLab/stack-guard?label=release&color=b5893a)](https://github.com/SolanceLab/stack-guard/releases/latest)
+[![Licence](https://img.shields.io/badge/licence-PolyForm%20Noncommercial-1c2742)](LICENSE.md)
+[![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-56607c)](#quick-start)
+[![Codex](https://img.shields.io/badge/Codex-plugin-56607c)](#quick-start)
+[![macOS](https://img.shields.io/badge/macOS-tested-56607c?logo=apple&logoColor=white)](#what-you-need)
+[![Linux](https://img.shields.io/badge/Linux-tested%20in%20CI-56607c?logo=linux&logoColor=white)](https://github.com/SolanceLab/stack-guard/actions/workflows/test.yml)
+[![Windows](https://img.shields.io/badge/Windows-reported%20by%20a%20user-7d8a6a?logo=windows&logoColor=white)](https://github.com/SolanceLab/stack-guard/issues)
+
+</div>
 
 Made by House of Solance · free for noncommercial use · credit required
 
 stack-guard checks everything you build and run for known security holes, tells you in plain words, and fixes the safe ones once you say yes.
 
-<div align="center">
+> 🆕 **New in 1.10.1:** the install-time `lock-check` now checks npm packages in scopes stack-guard does not know (for example @vitest) for malware.
 
-🛡️
+<table>
+<tr>
+<td width="42%"><img src="docs/card.jpg" width="100%" alt="A quiet street at evening, every window dark except one house with a lit front door. A figure of light, with no face, hands a single sealed letter with a gold seal to that door while the neighbouring houses sleep."></td>
+<td>
 
-***Your setup is yours alone.** A Python script here. A Discord bot there. A site on Vercel. A little server you forgot to shut down. All of it runs on code other people wrote, and any of it can have a hole.*
+🛡️ ***Your setup is yours alone.** A Python script here. A Discord bot there. A site on Vercel. A little server you forgot to shut down. All of it runs on code other people wrote, and any of it can have a hole.*
 
 *The fixes get published. But there's no recall: nobody tells the people running the broken version.*
 
 ***stack-guard sends you that alert.** It finds everything you run, even what you forgot. It watches every warning and every patch for all of it. When one is yours, it tells you plainly, plans the fix, and does it safely once you say yes.*
 
-</div>
+</td>
+</tr>
+</table>
 
 <p align="center"><img src="docs/how-it-works.svg" width="900" alt="Everything you have built is combed through by plain code into a list of services. A database check (plain code) and a news scout (AI, headless, web search only) check that list. An AI with no tools explains what it found in plain words, with a plan. After your yes, an AI fixer fixes and tests it, and puts it back if it breaks."></p>
+
+**Contents:** [Quick start](#quick-start) · [What it is](#what-it-is) · [Where it fits](#where-it-fits) · [What you need](#what-you-need) · [Use](#use) · [Settings](#settings) · [Tools](#tools) · [Limits](#limits) · [Safety](#safety) · [How it works](#how-it-works) · [Help make it better](#help-make-it-better) · [Thanks](#thanks) · [Credit and use](#credit-and-use) · [Licence](#licence) · [Support](#support)
 
 ## Quick start
 
@@ -45,6 +70,11 @@ Installed it earlier from `SolanceLab/stack-guard`? That still works, and the da
 ## What it is
 
 **One prompt to check everything you build and run with Claude Code or Codex for known security holes, and fix the safe ones.** It finds what you run, checks the public vulnerability databases and this fortnight's security news for your exact versions, tells you in plain words, and fixes what can be fixed safely, after your yes. The full list: [What it does](docs/what-it-does.md).
+
+## Where it fits
+
+**Fits** anyone who builds and runs their own code (scripts, bots, sites, small servers) and wants to hear about a security hole in it, in plain words.
+**Overkill** if you run no code of your own. It does not scan container images, GitHub Actions or package signatures, so those need another tool.
 
 ## What you need
 

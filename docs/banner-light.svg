@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 280" width="1280" height="280" role="img" aria-label="stack-guard: your security alert, in plain words">
+  <rect width="1280" height="280" rx="18" fill="#fbf7ef"/>
+  <rect x="10" y="10" width="1260" height="260" rx="12" fill="none" stroke="#b5893a" stroke-opacity="0.45" stroke-width="1.5"/>
+  <g transform="translate(110,58)" fill="none" stroke="#1c2742" stroke-width="5" stroke-linejoin="round" stroke-linecap="round">
+    <path d="M90 6 L160 30 L160 84 C160 124 128 150 90 166 C52 150 20 124 20 84 L20 30 Z" fill="#f6ead0" fill-opacity="0.45"/>
+    <path d="M58 88 L82 112 L126 62" stroke="#b5893a"/>
+  </g>
+  <text x="340" y="150" font-family="Georgia, 'Times New Roman', serif" font-size="84" fill="#1c2742" letter-spacing="1">stack-guard</text>
+  <line x1="880" y1="70" x2="880" y2="210" stroke="#b5893a" stroke-width="2"/>
+  <text x="912" y="128" font-family="Georgia, 'Times New Roman', serif" font-size="32" font-style="italic" fill="#56607c">Your security alert,</text>
+  <text x="912" y="172" font-family="Georgia, 'Times New Roman', serif" font-size="32" font-style="italic" fill="#56607c">in plain words.</text>
+  <text x="342" y="196" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="20" fill="#b5893a" letter-spacing="4">FIND · CHECK · EXPLAIN · FIX</text>
+</svg>
